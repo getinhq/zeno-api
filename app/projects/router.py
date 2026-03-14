@@ -1,0 +1,93 @@
+"""Projects API — list and create projects (Postgres)."""
+from __future__ import annotations
+
+import json
+from uuid import UUID
+
+import asyncpg
+from fastapi import APIRouter, Body, HTTPException
+
+from app.db import acquire
+
+router = APIRouter(prefix="/projects", tags=["projects"])
+
+
+@router.get("")
+async def list_projects() -> list[dict]:
+    """List all projects (id, name, code, status)."""
+    async with acquire() as conn:
+        rows = await conn.fetch(
+            "SELECT id, name, code, status, created_at FROM projects ORDER BY name"
+        )
+    return [
+        {
+            "id": str(r["id"]),
+            "name": r["name"],
+            "code": r["code"],
+            "status": r["status"],
+            "created_at": r["created_at"].isoformat() if r["created_at"] else None,
+        }
+        for r in rows
+    ]
+
+
+@router.get("/{project_id}")
+async def get_project(project_id: UUID) -> dict:
+    """Get one project by id."""
+    async with acquire() as conn:
+        row = await conn.fetchrow(
+            "SELECT id, name, code, status, start_date, end_date, metadata, created_at, updated_at FROM projects WHERE id = $1",
+            project_id,
+        )
+    if not row:
+        raise HTTPException(status_code=404, detail="Project not found")
+    return {
+        "id": str(row["id"]),
+        "name": row["name"],
+        "code": row["code"],
+        "status": row["status"],
+        "start_date": row["start_date"].isoformat() if row["start_date"] else None,
+        "end_date": row["end_date"].isoformat() if row["end_date"] else None,
+        "metadata": dict(row["metadata"]) if row["metadata"] else {},
+        "created_at": row["created_at"].isoformat() if row["created_at"] else None,
+        "updated_at": row["updated_at"].isoformat() if row["updated_at"] else None,
+    }
+
+
+@router.post("")
+async def create_project(body: dict = Body(...)) -> dict:
+    """Create a project. Expects JSON: name, code; optional: status, start_date, end_date, metadata."""
+    name = body.get("name")
+    code = body.get("code")
+    if not name or not code:
+        raise HTTPException(status_code=400, detail="name and code are required")
+    status = body.get("status", "active")
+    start_date = body.get("start_date")
+    end_date = body.get("end_date")
+    metadata = body.get("metadata") or {}
+
+    async with acquire() as conn:
+        try:
+            row = await conn.fetchrow(
+                """
+                INSERT INTO projects (name, code, status, start_date, end_date, metadata)
+                VALUES ($1, $2, $3, $4::date, $5::date, $6::jsonb)
+                RETURNING id, name, code, status, created_at
+                """,
+                name,
+                code,
+                status,
+                start_date,
+                end_date,
+                json.dumps(metadata) if metadata else "{}",
+            )
+        except asyncpg.UniqueViolationError as e:
+            raise HTTPException(status_code=409, detail=str(e)) from e
+
+    return {
+        "id": str(row["id"]),
+        "name": row["name"],
+        "code": row["code"],
+        "status": row["status"],
+        "created_at": row["created_at"].isoformat() if row["created_at"] else None,
+    }

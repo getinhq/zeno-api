@@ -13,7 +13,7 @@ Single source of truth for stack and versions. Aligned with Development Roadmap 
 | Event bus | NATS or Redis Streams | Decide one; roadmap suggests NATS |
 | Web dashboard | React 18, Vite, Tailwind | Per roadmap |
 | DCC plugins | Python: cmds/OpenMaya2, hou, nuke, bpy | Thin layer, ~350–500 lines per plugin |
-| CAS storage (dev) | Local NAS path or S3-compatible (MinIO) | Hash-keyed blobs; server-side verify |
+| CAS storage (0.1) | NAS only (local/NAS path) | Hash-keyed blobs; server-side verify; no S3 in 0.1 |
 
 ## Future (Phase 2+)
 
