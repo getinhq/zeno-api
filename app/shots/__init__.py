@@ -1,0 +1,2 @@
+"""Shots API module."""
+

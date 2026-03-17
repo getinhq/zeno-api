@@ -21,8 +21,5 @@ S3_ACCESS_KEY = os.environ.get("S3_ACCESS_KEY", "")
 S3_SECRET_KEY = os.environ.get("S3_SECRET_KEY", "")
 
 
-#CAS storage path for local development
-os.environ["CAS_ROOT"] = "/Users/osho/Desktop/local-workspace/zeno-workspace/chimera/zeno-cas"
-
-# CAS storage (NAS-only for 0.1)
+# CAS storage (NAS-only for 0.1). Set ZENO_CAS_ROOT or CAS_ROOT in env (e.g. from Docker Compose).
 CAS_ROOT = os.environ.get("ZENO_CAS_ROOT", os.environ.get("CAS_ROOT", "")).strip() or None

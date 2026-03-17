@@ -1,8 +1,9 @@
-"""CAS HTTP API: PUT/GET/HEAD /api/v1/cas/blobs/<hash>."""
+"""CAS HTTP API: POST/PUT/GET/HEAD /api/v1/cas/blobs; GET .../exists for dedup."""
 import hashlib
 import os
 import tempfile
 from pathlib import Path
+from typing import Union
 
 from fastapi import APIRouter, Request, Response
 from fastapi.responses import StreamingResponse
@@ -24,6 +25,57 @@ def _get_backend() -> NASBackend:
 def _validate_hash(hash_str: str) -> None:
     if not is_valid_hash(hash_str):
         raise HTTPException(status_code=400, detail="Invalid hash: must be 64 lowercase hex characters")
+
+
+@router.post("/blobs")
+async def post_blob(request: Request) -> Response:
+    """Upload blob with X-Content-Hash header; stream body, verify SHA-256. 201 created, 200 if exists, 400 on mismatch."""
+    if not CAS_ROOT:
+        return Response(status_code=503, content="CAS not configured (ZENO_CAS_ROOT)")
+    raw = request.headers.get("X-Content-Hash", "").strip()
+    if not raw:
+        raise HTTPException(status_code=400, detail="Missing or empty X-Content-Hash header")
+    hash_str = raw.lower()
+    _validate_hash(hash_str)
+    backend = _get_backend()
+    tmp_dir = backend._ensure_tmp()
+    hasher = hashlib.sha256()
+    fd, tmp_path = tempfile.mkstemp(dir=tmp_dir, prefix="blob_")
+    try:
+        with os.fdopen(fd, "wb") as f:
+            async for chunk in request.stream():
+                hasher.update(chunk)
+                f.write(chunk)
+        computed = hasher.hexdigest()
+        if computed != hash_str:
+            os.unlink(tmp_path)
+            raise HTTPException(
+                status_code=400,
+                detail=f"Content hash mismatch: expected {hash_str[:16]}..., got {computed[:16]}...",
+            )
+        created = backend.put_from_path(hash_str, Path(tmp_path))
+        return Response(status_code=201 if created else 200)
+    except HTTPException:
+        raise
+    except Exception:
+        if os.path.exists(tmp_path):
+            try:
+                os.unlink(tmp_path)
+            except OSError:
+                pass
+        raise
+
+
+@router.get("/blobs/{hash_str}/exists", response_model=None)
+async def blob_exists(hash_str: str) -> Union[Response, dict]:
+    """Return 200 with {\"exists\": true} if blob exists, 404 if not. For client-side dedup."""
+    if not CAS_ROOT:
+        return Response(status_code=503, content="CAS not configured (ZENO_CAS_ROOT)")
+    _validate_hash(hash_str)
+    backend = _get_backend()
+    if not backend.exists(hash_str):
+        raise HTTPException(status_code=404, detail="Blob not found")
+    return {"exists": True}
 
 
 @router.put("/blobs/{hash_str:path}")

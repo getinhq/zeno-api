@@ -14,7 +14,7 @@ END;
 $$ LANGUAGE plpgsql;
 
 -- 1. Users
-CREATE TABLE users (
+CREATE TABLE IF NOT EXISTS users (
     id          UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
     email       TEXT UNIQUE NOT NULL,
     name        TEXT,
@@ -25,7 +25,7 @@ CREATE TABLE users (
 );
 
 -- 2. Projects
-CREATE TABLE projects (
+CREATE TABLE IF NOT EXISTS projects (
     id          UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
     name        TEXT NOT NULL UNIQUE,
     code        TEXT NOT NULL UNIQUE,
@@ -38,12 +38,13 @@ CREATE TABLE projects (
     updated_at  TIMESTAMPTZ DEFAULT NOW()
 );
 
+DROP TRIGGER IF EXISTS projects_timestamp ON projects;
 CREATE TRIGGER projects_timestamp
     BEFORE UPDATE ON projects
     FOR EACH ROW EXECUTE PROCEDURE update_timestamp();
 
 -- 3. Episodes
-CREATE TABLE episodes (
+CREATE TABLE IF NOT EXISTS episodes (
     id              UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
     project_id      UUID NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
     episode_number  INT NOT NULL,
@@ -57,12 +58,13 @@ CREATE TABLE episodes (
     UNIQUE(project_id, code)
 );
 
+DROP TRIGGER IF EXISTS episodes_timestamp ON episodes;
 CREATE TRIGGER episodes_timestamp
     BEFORE UPDATE ON episodes
     FOR EACH ROW EXECUTE PROCEDURE update_timestamp();
 
 -- 4. Sequences
-CREATE TABLE sequences (
+CREATE TABLE IF NOT EXISTS sequences (
     id          UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
     episode_id  UUID NOT NULL REFERENCES episodes(id) ON DELETE CASCADE,
     name        TEXT NOT NULL,
@@ -73,12 +75,13 @@ CREATE TABLE sequences (
     UNIQUE(episode_id, code)
 );
 
+DROP TRIGGER IF EXISTS sequences_timestamp ON sequences;
 CREATE TRIGGER sequences_timestamp
     BEFORE UPDATE ON sequences
     FOR EACH ROW EXECUTE PROCEDURE update_timestamp();
 
 -- 5. Shots
-CREATE TABLE shots (
+CREATE TABLE IF NOT EXISTS shots (
     id              UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
     sequence_id     UUID NOT NULL REFERENCES sequences(id) ON DELETE CASCADE,
     shot_code       TEXT NOT NULL,
@@ -94,12 +97,13 @@ CREATE TABLE shots (
     UNIQUE(sequence_id, shot_code)
 );
 
+DROP TRIGGER IF EXISTS shots_timestamp ON shots;
 CREATE TRIGGER shots_timestamp
     BEFORE UPDATE ON shots
     FOR EACH ROW EXECUTE PROCEDURE update_timestamp();
 
 -- 6. Assets
-CREATE TABLE assets (
+CREATE TABLE IF NOT EXISTS assets (
     id          UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
     project_id  UUID NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
     type        TEXT NOT NULL
@@ -112,12 +116,13 @@ CREATE TABLE assets (
     UNIQUE(project_id, code)
 );
 
+DROP TRIGGER IF EXISTS assets_timestamp ON assets;
 CREATE TRIGGER assets_timestamp
     BEFORE UPDATE ON assets
     FOR EACH ROW EXECUTE PROCEDURE update_timestamp();
 
 -- 7. Tasks
-CREATE TABLE tasks (
+CREATE TABLE IF NOT EXISTS tasks (
     id              UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
     shot_id         UUID REFERENCES shots(id) ON DELETE CASCADE,
     asset_id        UUID REFERENCES assets(id),
@@ -134,12 +139,13 @@ CREATE TABLE tasks (
     updated_at      TIMESTAMPTZ DEFAULT NOW()
 );
 
+DROP TRIGGER IF EXISTS tasks_timestamp ON tasks;
 CREATE TRIGGER tasks_timestamp
     BEFORE UPDATE ON tasks
     FOR EACH ROW EXECUTE PROCEDURE update_timestamp();
 
 -- 8. Versions (CAS: content_id; per-asset per-representation versioning)
-CREATE TABLE versions (
+CREATE TABLE IF NOT EXISTS versions (
     id                UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
     asset_id          UUID NOT NULL REFERENCES assets(id) ON DELETE CASCADE,
     representation    TEXT NOT NULL,
@@ -158,12 +164,12 @@ CREATE TABLE versions (
     UNIQUE(asset_id, representation, version_number)
 );
 
-CREATE INDEX idx_versions_content_id ON versions(content_id);
-CREATE INDEX idx_versions_asset_rep_num ON versions(asset_id, representation, version_number);
-CREATE INDEX idx_versions_publish_batch ON versions(publish_batch_id);
+CREATE INDEX IF NOT EXISTS idx_versions_content_id ON versions(content_id);
+CREATE INDEX IF NOT EXISTS idx_versions_asset_rep_num ON versions(asset_id, representation, version_number);
+CREATE INDEX IF NOT EXISTS idx_versions_publish_batch ON versions(publish_batch_id);
 
 -- 9. Shot–Asset casting
-CREATE TABLE shot_assets (
+CREATE TABLE IF NOT EXISTS shot_assets (
     id              UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
     shot_id         UUID NOT NULL REFERENCES shots(id) ON DELETE CASCADE,
     asset_id        UUID NOT NULL REFERENCES assets(id) ON DELETE CASCADE,
@@ -178,11 +184,11 @@ CREATE TABLE shot_assets (
     UNIQUE(shot_id, asset_id, instance_name)
 );
 
-CREATE INDEX idx_shot_assets_shot   ON shot_assets(shot_id);
-CREATE INDEX idx_shot_assets_asset ON shot_assets(asset_id);
+CREATE INDEX IF NOT EXISTS idx_shot_assets_shot   ON shot_assets(shot_id);
+CREATE INDEX IF NOT EXISTS idx_shot_assets_asset ON shot_assets(asset_id);
 
 -- 10. Render jobs
-CREATE TABLE render_jobs (
+CREATE TABLE IF NOT EXISTS render_jobs (
     id              UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
     version_id      UUID REFERENCES versions(id),
     shot_id         UUID REFERENCES shots(id),
@@ -198,10 +204,10 @@ CREATE TABLE render_jobs (
     error_log       TEXT
 );
 
-CREATE INDEX idx_render_jobs_status ON render_jobs(status);
+CREATE INDEX IF NOT EXISTS idx_render_jobs_status ON render_jobs(status);
 
 -- 11. Workflows
-CREATE TABLE workflows (
+CREATE TABLE IF NOT EXISTS workflows (
     id          UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
     name        TEXT NOT NULL,
     steps       JSONB NOT NULL,
@@ -211,7 +217,7 @@ CREATE TABLE workflows (
 );
 
 -- 12. Reviews
-CREATE TABLE reviews (
+CREATE TABLE IF NOT EXISTS reviews (
     id          UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
     version_id  UUID REFERENCES versions(id),
     reviewer_id UUID REFERENCES users(id),
@@ -222,10 +228,10 @@ CREATE TABLE reviews (
 );
 
 -- Extra indexes
-CREATE INDEX idx_shots_sequence_status ON shots(sequence_id, status);
-CREATE INDEX idx_tasks_assignee_status ON tasks(assignee_id, status);
-CREATE INDEX idx_episodes_project_code ON episodes(project_id, code);
+CREATE INDEX IF NOT EXISTS idx_shots_sequence_status ON shots(sequence_id, status);
+CREATE INDEX IF NOT EXISTS idx_tasks_assignee_status ON tasks(assignee_id, status);
+CREATE INDEX IF NOT EXISTS idx_episodes_project_code ON episodes(project_id, code);
 
-CREATE INDEX idx_assets_metadata_gin        ON assets USING GIN (metadata);
-CREATE INDEX idx_versions_render_settings   ON versions USING GIN (render_settings);
-CREATE INDEX idx_shot_assets_transform      ON shot_assets USING GIN (transform_data);
+CREATE INDEX IF NOT EXISTS idx_assets_metadata_gin        ON assets USING GIN (metadata);
+CREATE INDEX IF NOT EXISTS idx_versions_render_settings   ON versions USING GIN (render_settings);
+CREATE INDEX IF NOT EXISTS idx_shot_assets_transform      ON shot_assets USING GIN (transform_data);
