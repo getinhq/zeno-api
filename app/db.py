@@ -6,7 +6,7 @@ from typing import AsyncGenerator, Optional
 
 import asyncpg
 
-from app.config import DATABASE_URL
+import app.config as app_config
 
 _pool: Optional[asyncpg.Pool] = None
 
@@ -14,9 +14,11 @@ _pool: Optional[asyncpg.Pool] = None
 async def get_pool() -> asyncpg.Pool:
     global _pool
     if _pool is None:
-        if not DATABASE_URL:
+        if not app_config.DATABASE_URL:
             raise RuntimeError("DATABASE_URL is not set")
-        _pool = await asyncpg.create_pool(DATABASE_URL, min_size=1, max_size=10, command_timeout=60)
+        _pool = await asyncpg.create_pool(
+            app_config.DATABASE_URL, min_size=1, max_size=10, command_timeout=60
+        )
     return _pool
 
 

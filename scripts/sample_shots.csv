@@ -1,4 +1,0 @@
-project_code,episode_code,sequence_code,shot_code,frame_start,frame_end,status
-BLT2,ep01,sq01,sh001,1,100,pending
-BLT2,ep01,sq01,sh002,101,200,pending
-BLT2,ep01,sq02,sh003,1,150,in_progress

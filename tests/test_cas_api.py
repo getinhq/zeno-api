@@ -26,9 +26,12 @@ def cas_root(tmp_path):
 def client_with_cas(cas_root, monkeypatch):
     monkeypatch.setenv("ZENO_CAS_ROOT", cas_root)
     from app import config
-    from app.cas import router as cas_router
+
     monkeypatch.setattr(config, "CAS_ROOT", cas_root)
-    monkeypatch.setattr(cas_router, "CAS_ROOT", cas_root)
+    monkeypatch.setattr(config, "CAS_STORAGE_BACKEND", "nas")
+    monkeypatch.setattr(config, "S3_ENDPOINT_URL", None)
+    monkeypatch.setattr(config, "S3_ACCESS_KEY", None)
+    monkeypatch.setattr(config, "S3_SECRET_KEY", None)
     return TestClient(app)
 
 
@@ -91,21 +94,40 @@ def test_invalid_hash_400(client_with_cas):
         assert r.status_code == 400
 
 
-def test_cas_not_configured_503():
-    """Without ZENO_CAS_ROOT, CAS endpoints return 503."""
+def test_cas_not_configured_503(monkeypatch):
+    """Without NAS root and without S3, CAS endpoints return 503."""
     from app import config
-    from app.cas import router as cas_router
-    original_config = config.CAS_ROOT
-    original_router = cas_router.CAS_ROOT
+    import app.db as db_mod
+
+    orig = (
+        config.CAS_ROOT,
+        config.CAS_STORAGE_BACKEND,
+        config.S3_ENDPOINT_URL,
+        config.S3_ACCESS_KEY,
+        config.S3_SECRET_KEY,
+        config.DATABASE_URL,
+    )
     try:
+        monkeypatch.setattr(config, "DATABASE_URL", None)
+        db_mod._pool = None
         config.CAS_ROOT = None
-        cas_router.CAS_ROOT = None
+        config.CAS_STORAGE_BACKEND = "auto"
+        config.S3_ENDPOINT_URL = None
+        config.S3_ACCESS_KEY = None
+        config.S3_SECRET_KEY = None
         with TestClient(app) as c:
             r = c.put("/api/v1/cas/blobs/" + "a" * 64, content=b"x")
             assert r.status_code == 503
     finally:
-        config.CAS_ROOT = original_config
-        cas_router.CAS_ROOT = original_router
+        (
+            config.CAS_ROOT,
+            config.CAS_STORAGE_BACKEND,
+            config.S3_ENDPOINT_URL,
+            config.S3_ACCESS_KEY,
+            config.S3_SECRET_KEY,
+            config.DATABASE_URL,
+        ) = orig
+        db_mod._pool = None
 
 
 # --- POST /blobs (X-Content-Hash header) ---
@@ -182,14 +204,26 @@ def test_post_blob_header_normalized_lowercase(client_with_cas):
     assert r.status_code == 201
 
 
-def test_post_blob_cas_not_configured_503():
+def test_post_blob_cas_not_configured_503(monkeypatch):
     from app import config
-    from app.cas import router as cas_router
-    original_config = config.CAS_ROOT
-    original_router = cas_router.CAS_ROOT
+    import app.db as db_mod
+
+    orig = (
+        config.CAS_ROOT,
+        config.CAS_STORAGE_BACKEND,
+        config.S3_ENDPOINT_URL,
+        config.S3_ACCESS_KEY,
+        config.S3_SECRET_KEY,
+        config.DATABASE_URL,
+    )
     try:
+        monkeypatch.setattr(config, "DATABASE_URL", None)
+        db_mod._pool = None
         config.CAS_ROOT = None
-        cas_router.CAS_ROOT = None
+        config.CAS_STORAGE_BACKEND = "auto"
+        config.S3_ENDPOINT_URL = None
+        config.S3_ACCESS_KEY = None
+        config.S3_SECRET_KEY = None
         with TestClient(app) as c:
             r = c.post(
                 "/api/v1/cas/blobs",
@@ -198,8 +232,15 @@ def test_post_blob_cas_not_configured_503():
             )
             assert r.status_code == 503
     finally:
-        config.CAS_ROOT = original_config
-        cas_router.CAS_ROOT = original_router
+        (
+            config.CAS_ROOT,
+            config.CAS_STORAGE_BACKEND,
+            config.S3_ENDPOINT_URL,
+            config.S3_ACCESS_KEY,
+            config.S3_SECRET_KEY,
+            config.DATABASE_URL,
+        ) = orig
+        db_mod._pool = None
 
 
 # --- GET /blobs/{hash}/exists ---

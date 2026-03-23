@@ -12,6 +12,19 @@ from app.db import acquire
 
 router = APIRouter(prefix="/api/v1", tags=["sequences"])
 
+def _norm_metadata(value: Any) -> dict:
+    if not value:
+        return {}
+    if isinstance(value, dict):
+        return value
+    if isinstance(value, str):
+        try:
+            parsed = json.loads(value)
+            return parsed if isinstance(parsed, dict) else {}
+        except Exception:
+            return {}
+    return {}
+
 
 @router.get("/episodes/{episode_id}/sequences")
 async def list_sequences_for_episode(
@@ -38,7 +51,7 @@ async def list_sequences_for_episode(
             "episode_id": str(r["episode_id"]),
             "name": r["name"],
             "code": r["code"],
-            "metadata": dict(r["metadata"]) if r["metadata"] else {},
+            "metadata": _norm_metadata(r["metadata"]),
             "created_at": r["created_at"].isoformat() if r["created_at"] else None,
             "updated_at": r["updated_at"].isoformat() if r["updated_at"] else None,
         }
@@ -65,7 +78,7 @@ async def get_sequence(sequence_id: UUID = Path(...)) -> dict:
         "episode_id": str(row["episode_id"]),
         "name": row["name"],
         "code": row["code"],
-        "metadata": dict(row["metadata"]) if row["metadata"] else {},
+        "metadata": _norm_metadata(row["metadata"]),
         "created_at": row["created_at"].isoformat() if row["created_at"] else None,
         "updated_at": row["updated_at"].isoformat() if row["updated_at"] else None,
     }
@@ -103,7 +116,7 @@ async def create_sequence(episode_id: UUID, body: dict = Body(...)) -> dict:
         "episode_id": str(row["episode_id"]),
         "name": row["name"],
         "code": row["code"],
-        "metadata": dict(row["metadata"]) if row["metadata"] else {},
+        "metadata": _norm_metadata(row["metadata"]),
         "created_at": row["created_at"].isoformat() if row["created_at"] else None,
         "updated_at": row["updated_at"].isoformat() if row["updated_at"] else None,
     }
@@ -144,7 +157,7 @@ async def update_sequence(sequence_id: UUID, body: dict = Body(...)) -> dict:
         "episode_id": str(row["episode_id"]),
         "name": row["name"],
         "code": row["code"],
-        "metadata": dict(row["metadata"]) if row["metadata"] else {},
+        "metadata": _norm_metadata(row["metadata"]),
         "created_at": row["created_at"].isoformat() if row["created_at"] else None,
         "updated_at": row["updated_at"].isoformat() if row["updated_at"] else None,
     }

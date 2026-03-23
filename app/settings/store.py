@@ -57,6 +57,11 @@ def _get_db():
         return client[MONGO_DB_NAME]
 
 
+def get_mongo_db():
+    """Shared Mongo database handle (settings, manifests, etc.)."""
+    return _get_db()
+
+
 def _now() -> datetime:
     return datetime.utcnow()
 

@@ -3,7 +3,7 @@ from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
 
-from app.config import DATABASE_URL, MONGO_URI
+import app.config as app_config
 from app.cas.router import router as cas_router
 from app.db import close_pool, get_pool
 from app.health import run_health_checks
@@ -19,17 +19,19 @@ from app.shots.router import router as shots_router
 from app.tasks.router import router as tasks_router
 from app.resolver.router import router as resolver_router
 from app.settings.router import router as settings_router
+from app.manifests.store import ensure_manifest_indexes
 from app.settings.store import ensure_settings_indexes
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    if MONGO_URI:
+    if app_config.MONGO_URI:
         try:
             ensure_settings_indexes()
+            ensure_manifest_indexes()
         except Exception:
             pass
-    if DATABASE_URL:
+    if app_config.DATABASE_URL:
         await get_pool()
     yield
     await close_pool()

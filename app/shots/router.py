@@ -12,6 +12,19 @@ from app.db import acquire
 
 router = APIRouter(prefix="/api/v1", tags=["shots"])
 
+def _norm_metadata(value: Any) -> dict:
+    if not value:
+        return {}
+    if isinstance(value, dict):
+        return value
+    if isinstance(value, str):
+        try:
+            parsed = json.loads(value)
+            return parsed if isinstance(parsed, dict) else {}
+        except Exception:
+            return {}
+    return {}
+
 
 @router.get("/sequences/{sequence_id}/shots")
 async def list_shots_for_sequence(
@@ -48,7 +61,7 @@ async def list_shots_for_sequence(
             "handle_in": r["handle_in"],
             "handle_out": r["handle_out"],
             "status": r["status"],
-            "metadata": dict(r["metadata"]) if r["metadata"] else {},
+            "metadata": _norm_metadata(r["metadata"]),
             "created_at": r["created_at"].isoformat() if r["created_at"] else None,
             "updated_at": r["updated_at"].isoformat() if r["updated_at"] else None,
         }

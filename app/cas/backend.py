@@ -23,6 +23,10 @@ class NASBackend:
         self._tmp_dir.mkdir(parents=True, exist_ok=True)
         return self._tmp_dir
 
+    def ensure_tmp(self) -> Path:
+        """Directory for verified streaming uploads (compat with S3 backend)."""
+        return self._ensure_tmp()
+
     def exists(self, hash_str: str) -> bool:
         """Return True if a blob with this hash exists."""
         if not is_valid_hash(hash_str):

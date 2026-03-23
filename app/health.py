@@ -46,7 +46,7 @@ async def check_mongo() -> dict[str, Any]:
         return {"status": "skipped", "reason": "MONGO_URI not set"}
     try:
         from pymongo import MongoClient
-        from pymongo.server_api import ServerApi
+
         client = MongoClient(MONGO_URI, serverSelectionTimeoutMS=3000)
         client.admin.command("ping")
         client.close()
@@ -56,7 +56,7 @@ async def check_mongo() -> dict[str, Any]:
 
 
 async def check_minio() -> dict[str, Any]:
-    if not S3_ENDPOINT_URL or not S3_ACCESS_KEY:
+    if not S3_ENDPOINT_URL or not (S3_ACCESS_KEY or "").strip():
         return {"status": "skipped", "reason": "S3_ENDPOINT_URL / S3_ACCESS_KEY not set"}
     try:
         import boto3

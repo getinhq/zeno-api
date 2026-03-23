@@ -8,9 +8,10 @@ from uuid import UUID
 from fastapi import APIRouter, HTTPException, Path, Query, Response
 from pydantic import BaseModel, Field, validator
 
+from app.cas.factory import get_cas_backend
 from app.cas.paths import is_valid_hash
-from app.cas.backend import NASBackend
-from app.config import CAS_ROOT
+from app.config import MONGO_URI
+from app.manifests.store import get_manifest_document
 from app.db import acquire
 from app.versions.service import (
     ContentNotFoundInCas,
@@ -160,10 +161,11 @@ async def list_versions_for_asset(asset_id: UUID = Path(...)) -> Any:
     return out
 
 
-def _cas_backend() -> NASBackend:
-    if not CAS_ROOT:
-        raise HTTPException(status_code=503, detail="CAS not configured")
-    return NASBackend(CAS_ROOT)
+def _cas_backend():
+    try:
+        return get_cas_backend()
+    except RuntimeError as e:
+        raise HTTPException(status_code=503, detail=str(e)) from e
 
 
 @router.get("/manifests/{content_id}")
@@ -172,12 +174,20 @@ async def get_manifest_json(
     max_bytes: int = Query(1024 * 1024, ge=1, le=10 * 1024 * 1024),
 ) -> Any:
     """
-    Fetch a manifest blob from CAS and return parsed JSON.
-    This avoids downloading files locally just to inspect the manifest.
+    Resolve a manifest by content hash: MongoDB first (chimera.manifest.v1), else legacy CAS blob.
     """
     cid = content_id.strip().lower()
     if not is_valid_hash(cid):
         raise HTTPException(status_code=400, detail="content_id must be a 64-character lowercase hex SHA-256 hash")
+
+    if MONGO_URI:
+        try:
+            doc = get_manifest_document(cid)
+            if doc is not None:
+                return doc
+        except Exception:
+            pass
+
     backend = _cas_backend()
     if not backend.exists(cid):
         raise HTTPException(status_code=404, detail="Manifest not found")

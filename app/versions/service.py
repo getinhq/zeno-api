@@ -7,9 +7,8 @@ from typing import Any, Optional
 
 import asyncpg
 
-from app.cas.backend import NASBackend
+from app.cas.factory import get_cas_backend
 from app.cas.paths import is_valid_hash
-from app.config import CAS_ROOT
 from app.db import acquire
 
 
@@ -121,14 +120,11 @@ async def _pick_version_number(
     return num, True
 
 
-def _ensure_cas_backend() -> NASBackend:
-    if not CAS_ROOT:
-        raise ServiceUnavailable("CAS_ROOT not configured")
-    return NASBackend(CAS_ROOT)
-
-
 def _ensure_cas_content_exists(content_id: str) -> None:
-    backend = _ensure_cas_backend()
+    try:
+        backend = get_cas_backend()
+    except RuntimeError as e:
+        raise ServiceUnavailable(str(e)) from e
     if not backend.exists(content_id):
         raise ContentNotFoundInCas(f"CAS content not found for hash {content_id[:16]}...")
 
