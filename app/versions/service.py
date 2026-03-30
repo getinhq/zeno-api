@@ -47,6 +47,7 @@ class RegisterVersionData:
     filename: Optional[str]
     size: Optional[int]
     publish_batch_id: Optional[str] = None
+    metadata: Optional[dict[str, Any]] = None
 
 
 async def _resolve_project_id(conn: asyncpg.Connection, project_spec: str) -> Optional[str]:
@@ -129,6 +130,18 @@ def _ensure_cas_content_exists(content_id: str) -> None:
         raise ContentNotFoundInCas(f"CAS content not found for hash {content_id[:16]}...")
 
 
+def _ensure_optional_dedup_from_metadata(metadata: Optional[dict[str, Any]]) -> None:
+    """If metadata links a dedup artifact, ensure that CAS blob exists too."""
+    if not metadata:
+        return
+    da = metadata.get("dedup_artifact")
+    if not isinstance(da, dict):
+        return
+    did = str(da.get("content_id") or "").strip().lower()
+    if did and is_valid_hash(did):
+        _ensure_cas_content_exists(did)
+
+
 async def register_version(data: RegisterVersionData) -> dict[str, Any]:
     """Register a new version row for an existing asset, linked to an existing CAS blob."""
     content_id = data.content_id
@@ -170,8 +183,9 @@ async def register_version(data: RegisterVersionData) -> dict[str, Any]:
                             f"Version {version_number} already exists for asset and representation"
                         )
 
-                # Check CAS before inserting row
+                # Check CAS before inserting row (delivery + optional dedup manifest)
                 _ensure_cas_content_exists(content_id)
+                _ensure_optional_dedup_from_metadata(data.metadata)
 
                 # Use provided filename or fall back to content_id
                 filename = data.filename or content_id
@@ -185,10 +199,11 @@ async def register_version(data: RegisterVersionData) -> dict[str, Any]:
                         content_id,
                         filename,
                         size_bytes,
-                        publish_batch_id
+                        publish_batch_id,
+                        metadata
                     )
-                    VALUES ($1, $2, $3, $4, $5, $6, $7::uuid)
-                    RETURNING id, asset_id, representation, version_number, content_id, filename, size_bytes
+                    VALUES ($1, $2, $3, $4, $5, $6, $7::uuid, $8::jsonb)
+                    RETURNING id, asset_id, representation, version_number, content_id, filename, size_bytes, metadata
                     """,
                     asset_id,
                     data.representation,
@@ -197,11 +212,12 @@ async def register_version(data: RegisterVersionData) -> dict[str, Any]:
                     filename,
                     data.size,
                     data.publish_batch_id,
+                    data.metadata,
                 )
         except asyncpg.PostgresError as e:
             raise ServiceUnavailable(f"Database error: {str(e)}") from e
 
-    return {
+    out: dict[str, Any] = {
         "project_id": project_id,
         "asset_id": str(row["asset_id"]),
         "version_id": str(row["id"]),
@@ -210,4 +226,8 @@ async def register_version(data: RegisterVersionData) -> dict[str, Any]:
         "filename": row["filename"],
         "size": row["size_bytes"],
     }
+    meta = row["metadata"]
+    if meta is not None:
+        out["metadata"] = dict(meta) if hasattr(meta, "keys") else meta
+    return out
 

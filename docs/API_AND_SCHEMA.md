@@ -100,8 +100,15 @@ Example: `GET /api/v1/resolve?uri=asset://MS01/hero_model/latest/fbx`
   - `content_id`: 64-char lowercase BLAKE3 hex; must already exist in CAS
   - `filename` (optional): display name
   - `size` (optional): bytes
-- **Response 201:** `{"project_id": "...", "asset_id": "...", "version_id": "...", "version_number": 1, "content_id": "...", "filename": "...", "size": 123}`.
+  - `metadata` (optional): JSON object (e.g. `dedup_artifact` for dual-artifact publishes: link canonical manifest id alongside raw delivery `content_id`)
+- **Response 201:** `{"project_id": "...", "asset_id": "...", "version_id": "...", "version_number": 1, "content_id": "...", "filename": "...", "size": 123, "metadata": {...}}` (metadata omitted when null).
 - **Errors:** 400 (invalid payload), 404 (project/asset not found), 409 (explicit version collision or CAS content missing), 503 (DB unavailable).
+
+### Latest content id (Omni parent / dual-artifact)
+
+- **GET** `/api/v1/versions/latest-content?project=...&asset=...&representation=...&artifact=delivery`
+  - `artifact=delivery` (default): `content_id` column — primary blob for resolver/DCC load (raw file when using dual-artifact blend publish).
+  - `artifact=dedup`: canonical dedup manifest id from `versions.metadata.dedup_artifact.content_id` when present; otherwise falls back to `content_id` (legacy single-manifest rows).
 
 ## CAS API (blobs)
 

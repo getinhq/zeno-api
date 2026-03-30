@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 import json
-from typing import Any, Optional
+from typing import Any, Dict, Literal, Optional
 from uuid import UUID
 
 from fastapi import APIRouter, HTTPException, Path, Query, Response
@@ -37,6 +37,10 @@ class RegisterVersionRequest(BaseModel):
     publish_batch_id: Optional[str] = Field(
         None, description="Optional UUID to group multiple representations into one version number"
     )
+    metadata: Optional[Dict[str, Any]] = Field(
+        None,
+        description="Optional JSON metadata (e.g. dedup_artifact link for dual-artifact publishes)",
+    )
 
     @validator("content_id")
     def validate_content_id(cls, v: str) -> str:
@@ -64,6 +68,7 @@ class RegisteredVersionResponse(BaseModel):
     content_id: str
     filename: str
     size: Optional[int]
+    metadata: Optional[Dict[str, Any]] = None
 
 
 @router.post("/versions", response_model=RegisteredVersionResponse, status_code=201)
@@ -78,6 +83,7 @@ async def register_version_endpoint(body: RegisterVersionRequest) -> Any:
         filename=body.filename,
         size=body.size,
         publish_batch_id=body.publish_batch_id,
+        metadata=body.metadata,
     )
     try:
         result = await register_version(data)
@@ -173,29 +179,58 @@ async def latest_content_id(
     project: str = Query(..., description="Project code or UUID"),
     asset: str = Query(..., description="Asset code or UUID"),
     representation: str = Query(..., description="Representation key"),
+    artifact: Literal["delivery", "dedup"] = Query(
+        "delivery",
+        description="delivery=primary CAS blob (default resolver); dedup=canonical manifest id from metadata when present",
+    ),
 ) -> Any:
     """
     Return latest content_id for project/asset/representation.
-    Used by Omni-Chunker to resolve parent version for patching.
+    Used by Omni-Chunker to resolve parent version for patching (use artifact=dedup when dual-artifact).
     """
     async with acquire() as conn:
-        row = await conn.fetchrow(
-            """
-            SELECT v.content_id, v.version_number, v.representation
-            FROM versions v
-            JOIN assets a ON a.id = v.asset_id
-            JOIN projects p ON p.id = a.project_id
-            WHERE
-                (p.code = $1 OR p.id::text = $1)
-                AND (a.code = $2 OR a.id::text = $2)
-                AND v.representation = $3
-            ORDER BY v.version_number DESC
-            LIMIT 1
-            """,
-            project,
-            asset,
-            representation,
-        )
+        if artifact == "dedup":
+            row = await conn.fetchrow(
+                """
+                SELECT
+                    COALESCE(
+                        NULLIF(trim(lower(v.metadata->'dedup_artifact'->>'content_id')), ''),
+                        v.content_id
+                    ) AS content_id,
+                    v.version_number,
+                    v.representation
+                FROM versions v
+                JOIN assets a ON a.id = v.asset_id
+                JOIN projects p ON p.id = a.project_id
+                WHERE
+                    (p.code = $1 OR p.id::text = $1)
+                    AND (a.code = $2 OR a.id::text = $2)
+                    AND v.representation = $3
+                ORDER BY v.version_number DESC
+                LIMIT 1
+                """,
+                project,
+                asset,
+                representation,
+            )
+        else:
+            row = await conn.fetchrow(
+                """
+                SELECT v.content_id, v.version_number, v.representation
+                FROM versions v
+                JOIN assets a ON a.id = v.asset_id
+                JOIN projects p ON p.id = a.project_id
+                WHERE
+                    (p.code = $1 OR p.id::text = $1)
+                    AND (a.code = $2 OR a.id::text = $2)
+                    AND v.representation = $3
+                ORDER BY v.version_number DESC
+                LIMIT 1
+                """,
+                project,
+                asset,
+                representation,
+            )
     if not row:
         raise HTTPException(status_code=404, detail="No version found for project/asset/representation")
     return {
