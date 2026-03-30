@@ -2,12 +2,12 @@
 import re
 from pathlib import Path
 
-# SHA-256 = 64 lowercase hex characters
+# BLAKE3 (default output) = 64 lowercase hex characters
 HASH_PATTERN = re.compile(r"^[0-9a-f]{64}$")
 
 
 def is_valid_hash(hash_str: str) -> bool:
-    """Return True if hash_str is a valid 64-char lowercase hex SHA-256."""
+    """Return True if hash_str is a valid 64-char lowercase hex digest."""
     return bool(hash_str and HASH_PATTERN.match(hash_str))
 
 

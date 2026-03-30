@@ -11,6 +11,7 @@ load_dotenv(os.path.join(_project_root, ".env"))
 DATABASE_URL = os.environ.get("DATABASE_URL", "").strip() or None
 REDIS_URL = os.environ.get("REDIS_URL", "").strip() or None
 MONGO_URI = os.environ.get("MONGO_URI", "").strip() or None
+APP_ENV = os.environ.get("APP_ENV", "development").strip().lower() or "development"
 # MongoDB database name when URI has no path (e.g. mongodb+srv://...net/). Use same as Postgres if you like.
 MONGO_DB_NAME = os.environ.get("ZENO_MONGO_DB", "zeno_db").strip() or "zeno_db"
 
@@ -25,3 +26,6 @@ CAS_STORAGE_BACKEND = os.environ.get("CAS_STORAGE_BACKEND", "auto").strip().lowe
 
 # CAS storage (filesystem). Set ZENO_CAS_ROOT or CAS_ROOT when using nas or auto without S3.
 CAS_ROOT = os.environ.get("ZENO_CAS_ROOT", os.environ.get("CAS_ROOT", "")).strip() or None
+
+# Redis manifest cache
+MANIFEST_CACHE_TTL_SECONDS = int(os.environ.get("MANIFEST_CACHE_TTL_SECONDS", "600"))

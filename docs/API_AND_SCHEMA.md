@@ -97,7 +97,7 @@ Example: `GET /api/v1/resolve?uri=asset://MS01/hero_model/latest/fbx`
   - `asset`: asset code or UUID under that project
   - `representation`: representation key (e.g. `model`, `fbx`, `abc`)
   - `version`: `"next"` or explicit positive integer (string)
-  - `content_id`: 64-char lowercase SHA-256 hex; must already exist in CAS
+  - `content_id`: 64-char lowercase BLAKE3 hex; must already exist in CAS
   - `filename` (optional): display name
   - `size` (optional): bytes
 - **Response 201:** `{"project_id": "...", "asset_id": "...", "version_id": "...", "version_number": 1, "content_id": "...", "filename": "...", "size": 123}`.
@@ -108,7 +108,7 @@ Example: `GET /api/v1/resolve?uri=asset://MS01/hero_model/latest/fbx`
 Content-addressable blob storage under `/api/v1/cas`. Requires `ZENO_CAS_ROOT`; otherwise endpoints return 503.
 
 - **POST** `/api/v1/cas/blobs`  
-  Upload a blob with hash in header. **Header:** `X-Content-Hash: <sha256>` (64 lowercase hex). **Body:** raw bytes (streamed). Server streams the body, computes SHA-256, and compares to the header; on mismatch returns 400. On match, writes to CAS: **201** if the blob was created, **200** if it already existed (idempotent). Errors: 400 (missing/invalid hash or content hash mismatch), 503 (CAS not configured).
+  Upload a blob with hash in header. **Header:** `X-Content-Hash: <blake3>` (64 lowercase hex). **Body:** raw bytes (streamed). Server streams the body, computes BLAKE3, and compares to the header; on mismatch returns 400. On match, writes to CAS: **201** if the blob was created, **200** if it already existed (idempotent). Errors: 400 (missing/invalid hash or content hash mismatch), 503 (CAS not configured).
 
 - **PUT** `/api/v1/cas/blobs/{hash}`  
   Upload with hash in path; same stream-and-verify behaviour; 201 created, 200 if exists, 400 on mismatch.

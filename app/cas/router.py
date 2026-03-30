@@ -1,15 +1,16 @@
 """CAS HTTP API: POST/PUT/GET/HEAD /api/v1/cas/blobs; GET .../exists for dedup."""
 from __future__ import annotations
 
-import hashlib
 import os
 import tempfile
 from pathlib import Path
 from typing import Union
 
+from blake3 import blake3
 from fastapi import APIRouter, HTTPException, Request, Response
 from fastapi.responses import StreamingResponse
 
+from app.cas.cache import get_cached_exists, set_cached_exists
 from app.cas.factory import get_cas_backend, is_cas_configured
 from app.cas.paths import is_valid_hash
 
@@ -23,7 +24,7 @@ def _validate_hash(hash_str: str) -> None:
 
 @router.post("/blobs")
 async def post_blob(request: Request) -> Response:
-    """Upload blob with X-Content-Hash header; stream body, verify SHA-256. 201 created, 200 if exists, 400 on mismatch."""
+    """Upload blob with X-Content-Hash header; stream body, verify BLAKE3. 201 created, 200 if exists, 400 on mismatch."""
     if not is_cas_configured():
         return Response(status_code=503, content="CAS not configured (S3 or ZENO_CAS_ROOT)")
     raw = request.headers.get("X-Content-Hash", "").strip()
@@ -36,7 +37,7 @@ async def post_blob(request: Request) -> Response:
     except RuntimeError:
         return Response(status_code=503, content="CAS not configured")
     tmp_dir = backend.ensure_tmp()
-    hasher = hashlib.sha256()
+    hasher = blake3()
     fd, tmp_path = tempfile.mkstemp(dir=tmp_dir, prefix="blob_")
     try:
         with os.fdopen(fd, "wb") as f:
@@ -73,14 +74,28 @@ async def blob_exists(hash_str: str) -> Union[Response, dict]:
         backend = get_cas_backend()
     except RuntimeError:
         return Response(status_code=503, content="CAS not configured")
-    if not backend.exists(hash_str):
+    cached = None
+    try:
+        cached = await get_cached_exists(hash_str)
+    except Exception:
+        cached = None
+    if cached is not None:
+        if not cached:
+            raise HTTPException(status_code=404, detail="Blob not found")
+        return {"exists": True}
+    exists = backend.exists(hash_str)
+    try:
+        await set_cached_exists(hash_str, exists)
+    except Exception:
+        pass
+    if not exists:
         raise HTTPException(status_code=404, detail="Blob not found")
     return {"exists": True}
 
 
 @router.put("/blobs/{hash_str:path}")
 async def put_blob(hash_str: str, request: Request) -> Response:
-    """Stream body to CAS; verify SHA-256; 400 if mismatch, 201 created, 200 if exists."""
+    """Stream body to CAS; verify BLAKE3; 400 if mismatch, 201 created, 200 if exists."""
     if not is_cas_configured():
         return Response(status_code=503, content="CAS not configured (S3 or ZENO_CAS_ROOT)")
     _validate_hash(hash_str)
@@ -89,7 +104,7 @@ async def put_blob(hash_str: str, request: Request) -> Response:
     except RuntimeError:
         return Response(status_code=503, content="CAS not configured")
     tmp_dir = backend.ensure_tmp()
-    hasher = hashlib.sha256()
+    hasher = blake3()
     fd, tmp_path = tempfile.mkstemp(dir=tmp_dir, prefix="blob_")
     try:
         with os.fdopen(fd, "wb") as f:

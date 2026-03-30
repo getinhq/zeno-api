@@ -11,6 +11,7 @@ from pydantic import BaseModel, Field, validator
 from app.cas.factory import get_cas_backend
 from app.cas.paths import is_valid_hash
 from app.config import MONGO_URI
+from app.manifests.cache import get_cached_manifest, set_cached_manifest
 from app.manifests.store import get_manifest_document
 from app.db import acquire
 from app.versions.service import (
@@ -30,7 +31,7 @@ class RegisterVersionRequest(BaseModel):
     asset: str = Field(..., description="Asset code or UUID within the project")
     representation: str = Field(..., description="Representation key, e.g. model, fbx, usd")
     version: str = Field(..., description="'next' or an explicit positive integer as string")
-    content_id: str = Field(..., description="64-char SHA-256 hex CAS content id")
+    content_id: str = Field(..., description="64-char lowercase hex CAS content id")
     filename: Optional[str] = Field(None, description="Optional human-facing filename")
     size: Optional[int] = Field(None, description="Optional size in bytes")
     publish_batch_id: Optional[str] = Field(
@@ -41,7 +42,7 @@ class RegisterVersionRequest(BaseModel):
     def validate_content_id(cls, v: str) -> str:
         v = v.strip().lower()
         if not is_valid_hash(v):
-            raise ValueError("content_id must be a 64-character lowercase hex SHA-256 hash")
+            raise ValueError("content_id must be a 64-character lowercase hex hash")
         return v
 
     @validator("version")
@@ -117,6 +118,12 @@ class AssetVersionGroup(BaseModel):
     representations: list[VersionRepresentation]
 
 
+class LatestContentResponse(BaseModel):
+    content_id: str
+    version_number: int
+    representation: str
+
+
 @router.get("/assets/{asset_id}/versions", response_model=list[AssetVersionGroup])
 async def list_versions_for_asset(asset_id: UUID = Path(...)) -> Any:
     """
@@ -161,6 +168,43 @@ async def list_versions_for_asset(asset_id: UUID = Path(...)) -> Any:
     return out
 
 
+@router.get("/versions/latest-content", response_model=LatestContentResponse)
+async def latest_content_id(
+    project: str = Query(..., description="Project code or UUID"),
+    asset: str = Query(..., description="Asset code or UUID"),
+    representation: str = Query(..., description="Representation key"),
+) -> Any:
+    """
+    Return latest content_id for project/asset/representation.
+    Used by Omni-Chunker to resolve parent version for patching.
+    """
+    async with acquire() as conn:
+        row = await conn.fetchrow(
+            """
+            SELECT v.content_id, v.version_number, v.representation
+            FROM versions v
+            JOIN assets a ON a.id = v.asset_id
+            JOIN projects p ON p.id = a.project_id
+            WHERE
+                (p.code = $1 OR p.id::text = $1)
+                AND (a.code = $2 OR a.id::text = $2)
+                AND v.representation = $3
+            ORDER BY v.version_number DESC
+            LIMIT 1
+            """,
+            project,
+            asset,
+            representation,
+        )
+    if not row:
+        raise HTTPException(status_code=404, detail="No version found for project/asset/representation")
+    return {
+        "content_id": str(row["content_id"]).strip().lower(),
+        "version_number": int(row["version_number"]),
+        "representation": str(row["representation"]),
+    }
+
+
 def _cas_backend():
     try:
         return get_cas_backend()
@@ -174,16 +218,27 @@ async def get_manifest_json(
     max_bytes: int = Query(1024 * 1024, ge=1, le=10 * 1024 * 1024),
 ) -> Any:
     """
-    Resolve a manifest by content hash: MongoDB first (chimera.manifest.v1), else legacy CAS blob.
+    Resolve a manifest by content hash: Redis cache -> MongoDB -> legacy CAS blob.
     """
     cid = content_id.strip().lower()
     if not is_valid_hash(cid):
-        raise HTTPException(status_code=400, detail="content_id must be a 64-character lowercase hex SHA-256 hash")
+        raise HTTPException(status_code=400, detail="content_id must be a 64-character lowercase hex hash")
+
+    try:
+        cached = await get_cached_manifest(cid)
+        if cached is not None:
+            return cached
+    except Exception:
+        pass
 
     if MONGO_URI:
         try:
             doc = get_manifest_document(cid)
             if doc is not None:
+                try:
+                    await set_cached_manifest(cid, doc)
+                except Exception:
+                    pass
                 return doc
         except Exception:
             pass
@@ -199,5 +254,10 @@ async def get_manifest_json(
         j = json.loads(b.decode("utf-8"))
     except Exception as e:
         raise HTTPException(status_code=400, detail="Blob is not valid JSON") from e
+    if isinstance(j, dict):
+        try:
+            await set_cached_manifest(cid, j)
+        except Exception:
+            pass
     return j
 

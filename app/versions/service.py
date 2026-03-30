@@ -133,7 +133,7 @@ async def register_version(data: RegisterVersionData) -> dict[str, Any]:
     """Register a new version row for an existing asset, linked to an existing CAS blob."""
     content_id = data.content_id
     if not is_valid_hash(content_id):
-        raise ValueError("content_id must be a 64-character lowercase hex SHA-256 hash")
+        raise ValueError("content_id must be a 64-character lowercase hex hash")
 
     async with acquire() as conn:
         try:

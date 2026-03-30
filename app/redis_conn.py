@@ -5,7 +5,7 @@ from typing import Optional
 
 from redis.asyncio import Redis
 
-from app.config import REDIS_URL
+import app.config as app_config
 
 _redis: Optional[Redis] = None
 
@@ -14,9 +14,9 @@ async def get_redis() -> Redis:
     """Return a singleton Redis client based on REDIS_URL."""
     global _redis
     if _redis is None:
-        if not REDIS_URL:
+        if not app_config.REDIS_URL:
             raise RuntimeError("REDIS_URL is not set")
-        _redis = Redis.from_url(REDIS_URL, decode_responses=True)
+        _redis = Redis.from_url(app_config.REDIS_URL, decode_responses=True)
     return _redis
 
 

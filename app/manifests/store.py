@@ -1,4 +1,4 @@
-"""MongoDB store for chimera.manifest.v1 documents keyed by manifest_hash.
+"""MongoDB store for Chimera manifest documents keyed by manifest_hash.
 
 Chunk payloads stay in CAS (filesystem or S3); only the manifest JSON lives here.
 """
@@ -10,7 +10,7 @@ from typing import Any, Dict, Optional
 from app.settings.store import get_mongo_db
 
 COLLECTION = "chimera_manifests"
-DEFAULT_SCHEMA = "chimera.manifest.v1"
+DEFAULT_SCHEMA = "chimera.manifest.v2"
 
 
 def ensure_manifest_indexes() -> None:

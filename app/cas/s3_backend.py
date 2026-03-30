@@ -1,13 +1,13 @@
 """S3-compatible CAS backend (MinIO, AWS): hash-keyed objects in a single bucket."""
 from __future__ import annotations
 
-import hashlib
 import os
 import tempfile
 from pathlib import Path
 from typing import BinaryIO, Iterator, Union
 
 import boto3
+from blake3 import blake3
 from botocore.config import Config
 from botocore.exceptions import ClientError
 
@@ -16,7 +16,7 @@ from app.cas.paths import is_valid_hash
 
 
 class S3Backend:
-    """CAS backend storing blobs in S3/MinIO; object key is the lowercase SHA-256 hex string."""
+    """CAS backend storing blobs in S3/MinIO; object key is the lowercase BLAKE3 hex string."""
 
     def __init__(
         self,
@@ -90,7 +90,7 @@ class S3Backend:
 
         tmp_dir = tempfile.mkdtemp(prefix="cas_s3_")
         tmp_path = os.path.join(tmp_dir, "blob")
-        hasher = hashlib.sha256()
+        hasher = blake3()
         try:
             with open(tmp_path, "wb") as f:
                 while chunk := stream.read(65536):

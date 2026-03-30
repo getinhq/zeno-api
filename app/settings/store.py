@@ -102,7 +102,12 @@ def get_global_settings(env: str, ttl_seconds: int = DEFAULT_TTL_SECONDS) -> Dic
             "resolution": {"width": 1920, "height": 1080},
             "frame": {"rate": 24.0, "handle_in": 0, "handle_out": 0},
             "qc_checks": [],
-            "extra": {},
+            "extra": {
+                "cas": {
+                    "use_minio": True,
+                    "local_cas_root": "/tmp/zeno_cas",
+                }
+            },
         }
 
     entry = SettingsCacheEntry(value=doc, expires_at=now + timedelta(seconds=ttl_seconds))
@@ -163,7 +168,15 @@ def upsert_global_settings(env: str, doc: Dict[str, Any]) -> Dict[str, Any]:
         "resolution": doc.get("resolution", {"width": 1920, "height": 1080}),
         "frame": doc.get("frame", {"rate": 24.0, "handle_in": 0, "handle_out": 0}),
         "qc_checks": doc.get("qc_checks", []),
-        "extra": doc.get("extra", {}),
+        "extra": doc.get(
+            "extra",
+            {
+                "cas": {
+                    "use_minio": True,
+                    "local_cas_root": "/tmp/zeno_cas",
+                }
+            },
+        ),
         "updated_at": now,
     }
     db["settings_global"].update_one(

@@ -1,19 +1,20 @@
 """NAS-backed CAS: exists, get_stream, put_stream with hash verification and atomic move."""
-import hashlib
 import os
 import tempfile
 from pathlib import Path
 from typing import BinaryIO, Iterator, Union
 
+from blake3 import blake3
+
 from app.cas.paths import hash_to_path, is_valid_hash
 
 
 class HashMismatchError(Exception):
-    """Raised when stream content SHA-256 does not match the expected hash."""
+    """Raised when stream content digest does not match the expected hash."""
 
 
 class NASBackend:
-    """CAS backend storing blobs on local/NAS filesystem by SHA-256 hash."""
+    """CAS backend storing blobs on local/NAS filesystem by BLAKE3 hash."""
 
     def __init__(self, root: Union[str, Path]) -> None:
         self.root = Path(root).resolve()
@@ -60,7 +61,7 @@ class NASBackend:
 
     def put_stream(self, hash_str: str, stream: BinaryIO) -> bool:
         """
-        Write stream to CAS: temp file + SHA-256 on the fly, then atomic move.
+        Write stream to CAS: temp file + BLAKE3 on the fly, then atomic move.
         Returns True if created (201), False if already existed (200 idempotent).
         Raises HashMismatchError if content hash != hash_str.
         """
@@ -71,7 +72,7 @@ class NASBackend:
             return False  # idempotent: already exists
 
         tmp_dir = self._ensure_tmp()
-        hasher = hashlib.sha256()
+        hasher = blake3()
         fd, tmp_path = tempfile.mkstemp(dir=tmp_dir, prefix="blob_")
         try:
             with os.fdopen(fd, "wb") as f:

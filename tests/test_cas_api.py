@@ -1,17 +1,17 @@
 """Integration-style tests: CAS PUT/GET/HEAD with temp CAS_ROOT."""
-import hashlib
 import os
 import tempfile
 from pathlib import Path
 
 import pytest
+from blake3 import blake3
 from fastapi.testclient import TestClient
 
 from main import app
 
 
-# SHA-256 of b"hello"
-HELLO_HASH = hashlib.sha256(b"hello").hexdigest()
+# BLAKE3 of b"hello"
+HELLO_HASH = blake3(b"hello").hexdigest()
 
 
 @pytest.fixture
@@ -67,7 +67,7 @@ def test_put_idempotent(client_with_cas):
 
 def test_put_hash_mismatch_400(client_with_cas):
     # Claim hash is HELLO_HASH but send different body
-    other_hash = hashlib.sha256(b"world").hexdigest()
+    other_hash = blake3(b"world").hexdigest()
     response = client_with_cas.put(
         f"/api/v1/cas/blobs/{HELLO_HASH}",
         content=b"world",
@@ -155,7 +155,7 @@ def test_post_blob_invalid_hash_400(client_with_cas):
 
 
 def test_post_blob_hash_mismatch_400(client_with_cas):
-    other_hash = hashlib.sha256(b"world").hexdigest()
+    other_hash = blake3(b"world").hexdigest()
     r = client_with_cas.post(
         "/api/v1/cas/blobs",
         headers={"X-Content-Hash": HELLO_HASH},
