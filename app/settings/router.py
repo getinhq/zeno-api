@@ -13,7 +13,7 @@ from app.settings.store import (
     upsert_project_settings,
 )
 
-router = APIRouter(prefix="/settings", tags=["settings"])
+router = APIRouter(prefix="/api/v1/settings", tags=["settings"])
 
 
 def _json_safe(d: dict) -> dict:
