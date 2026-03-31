@@ -1,6 +1,7 @@
 """Redis-backed presence tracking for user sessions (and optional asset presence)."""
 from __future__ import annotations
 
+import json
 from dataclasses import dataclass, asdict
 from datetime import datetime, timezone
 from typing import Any, Optional
@@ -57,7 +58,7 @@ async def heartbeat(
     index_key = _presence_index_key(user_id)
 
     try:
-        await redis.set(key, value, ex=ttl_seconds)
+        await redis.set(key, json.dumps(value, separators=(",", ":")), ex=ttl_seconds)
         await redis.sadd(index_key, session_id)
         if asset_ref is not None:
             aset_key = _asset_presence_key(asset_ref)
@@ -84,7 +85,11 @@ async def list_sessions(user_id: str) -> list[dict[str, Any]]:
             if data is None:
                 stale.append(sid)
                 continue
-            # data is stored as a dict (decode_responses=True); ensure dict type
+            if isinstance(data, str):
+                try:
+                    data = json.loads(data)
+                except json.JSONDecodeError:
+                    continue
             if isinstance(data, dict):
                 results.append(data)
         # Optionally clean up stale sessions from index

@@ -106,7 +106,8 @@ def get_global_settings(env: str, ttl_seconds: int = DEFAULT_TTL_SECONDS) -> Dic
                 "cas": {
                     "use_minio": True,
                     "local_cas_root": "/tmp/zeno_cas",
-                }
+                },
+                "dcc_applications": [],
             },
         }
 

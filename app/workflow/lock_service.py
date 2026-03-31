@@ -1,10 +1,28 @@
 """Redis-backed locks for asset representations."""
 from __future__ import annotations
 
+import json
 from datetime import datetime, timezone
 from typing import Any, Optional
 
 from app.redis_conn import get_redis
+
+
+def _decode_lock_value(raw: Any) -> Optional[dict[str, Any]]:
+    """Parse Redis GET payload (JSON string) or legacy dict."""
+    if raw is None:
+        return None
+    if isinstance(raw, dict):
+        return raw
+    if isinstance(raw, bytes):
+        raw = raw.decode("utf-8")
+    if isinstance(raw, str):
+        try:
+            out = json.loads(raw)
+        except json.JSONDecodeError:
+            return None
+        return out if isinstance(out, dict) else None
+    return None
 
 
 class LockUnavailable(Exception):
@@ -50,15 +68,15 @@ async def acquire_lock(
     }
 
     try:
-        # Try to create the lock if it does not exist
-        created = await redis.set(key, value, ex=ttl_seconds, nx=True)
+        # Try to create the lock if it does not exist (redis-py 5+ requires string/blob, not dict)
+        payload = json.dumps(value, separators=(",", ":"))
+        created = await redis.set(key, payload, ex=ttl_seconds, nx=True)
         if created:
             return {**value, "project": project, "asset": asset, "representation": representation}
 
         # Lock exists; check ownership
-        existing = await redis.get(key)
-        if not isinstance(existing, dict):
-            # Unexpected shape; treat as unavailable
+        existing = _decode_lock_value(await redis.get(key))
+        if existing is None:
             raise LockUnavailable("Lock value has unexpected format")
 
         if (
@@ -93,11 +111,9 @@ async def release_lock(
 
     key = _lock_key(project, asset, representation)
     try:
-        existing = await redis.get(key)
+        existing = _decode_lock_value(await redis.get(key))
         if existing is None:
             raise LockNotFound("Lock does not exist")
-        if not isinstance(existing, dict):
-            raise LockUnavailable("Lock value has unexpected format")
         if (
             existing.get("owner_user_id") != user_id
             or existing.get("owner_session_id") != session_id
@@ -123,8 +139,8 @@ async def get_lock_status(
 
     key = _lock_key(project, asset, representation)
     try:
-        existing = await redis.get(key)
-        if not isinstance(existing, dict):
+        existing = _decode_lock_value(await redis.get(key))
+        if existing is None:
             return None
         # Include resource identifiers
         existing = {

@@ -9,6 +9,7 @@ from app.db import close_pool, get_pool
 from app.health import run_health_checks
 from app.redis_conn import close_redis
 from app.workflow.locks_router import router as locks_router
+from app.launch.router import router as launch_router
 from app.workflow.presence_router import router as presence_router
 from app.versions.router import router as versions_router
 from app.projects.router import router as projects_router
@@ -65,6 +66,7 @@ app.include_router(settings_router)
 app.include_router(versions_router)
 app.include_router(presence_router)
 app.include_router(locks_router)
+app.include_router(launch_router)
 
 
 @app.get("/")

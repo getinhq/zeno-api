@@ -29,3 +29,8 @@ CAS_ROOT = os.environ.get("ZENO_CAS_ROOT", os.environ.get("CAS_ROOT", "")).strip
 
 # Redis manifest cache
 MANIFEST_CACHE_TTL_SECONDS = int(os.environ.get("MANIFEST_CACHE_TTL_SECONDS", "600"))
+
+# Launch tokens (Open in DCC) — mint requires secret in production/staging when set
+LAUNCH_TOKEN_TTL_SECONDS = int(os.environ.get("LAUNCH_TOKEN_TTL_SECONDS", "600"))
+ZENO_LAUNCH_MINT_SECRET = os.environ.get("ZENO_LAUNCH_MINT_SECRET", "").strip() or None
+LAUNCH_TOKEN_RATE_LIMIT_PER_MINUTE = int(os.environ.get("LAUNCH_TOKEN_RATE_LIMIT_PER_MINUTE", "60"))

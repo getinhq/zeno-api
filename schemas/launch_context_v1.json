@@ -1,0 +1,27 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://zeno.local/schemas/launch_context_v1.json",
+  "title": "launch_context_v1",
+  "type": "object",
+  "additionalProperties": true,
+  "required": ["version", "intent", "project_id", "dcc"],
+  "properties": {
+    "version": { "type": "string", "const": "1" },
+    "intent": {
+      "type": "string",
+      "enum": ["open_asset", "open_shot", "open_task", "open_project"]
+    },
+    "project_id": { "type": "string", "format": "uuid" },
+    "project_code": { "type": "string" },
+    "asset_id": { "type": "string", "format": "uuid" },
+    "shot_id": { "type": "string", "format": "uuid" },
+    "task_id": { "type": "string", "format": "uuid" },
+    "representation": { "type": "string", "description": "Lock/representation key when applicable" },
+    "version_spec": { "type": "object", "additionalProperties": true },
+    "dcc": { "type": "string" },
+    "dcc_label": { "type": "string", "description": "Label from Application Settings" },
+    "dcc_executable_path": { "type": "string", "description": "Resolved binary path (often set by API)" },
+    "resolved_path": { "type": "string" },
+    "api_base_url": { "type": "string", "format": "uri" }
+  }
+}

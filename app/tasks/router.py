@@ -13,6 +13,21 @@ from app.db import acquire
 router = APIRouter(prefix="/api/v1", tags=["tasks"])
 
 
+def _json_metadata(value: Any) -> dict:
+    """Normalize Postgres json/jsonb (dict, str, or legacy shapes) to a dict."""
+    if value is None:
+        return {}
+    if isinstance(value, dict):
+        return dict(value)
+    if isinstance(value, str):
+        try:
+            parsed = json.loads(value)
+            return parsed if isinstance(parsed, dict) else {}
+        except json.JSONDecodeError:
+            return {}
+    return {}
+
+
 @router.get("/tasks")
 async def list_tasks(
     project_id: Optional[UUID] = Query(None),
@@ -87,7 +102,7 @@ async def list_tasks(
             "estimated_hours": float(r["estimated_hours"]) if r["estimated_hours"] is not None else None,
             "actual_hours": float(r["actual_hours"]) if r["actual_hours"] is not None else None,
             "due_date": r["due_date"].isoformat() if r["due_date"] else None,
-            "metadata": dict(r["metadata"]) if r["metadata"] else {},
+            "metadata": _json_metadata(r["metadata"]),
             "created_at": r["created_at"].isoformat() if r["created_at"] else None,
             "updated_at": r["updated_at"].isoformat() if r["updated_at"] else None,
         }
@@ -121,7 +136,7 @@ async def get_task(task_id: UUID = Path(...)) -> dict:
         "estimated_hours": float(row["estimated_hours"]) if row["estimated_hours"] is not None else None,
         "actual_hours": float(row["actual_hours"]) if row["actual_hours"] is not None else None,
         "due_date": row["due_date"].isoformat() if row["due_date"] else None,
-        "metadata": dict(row["metadata"]) if row["metadata"] else {},
+        "metadata": _json_metadata(row["metadata"]),
         "created_at": row["created_at"].isoformat() if row["created_at"] else None,
         "updated_at": row["updated_at"].isoformat() if row["updated_at"] else None,
     }
@@ -182,7 +197,7 @@ async def create_task(body: dict = Body(...)) -> dict:
         "estimated_hours": float(row["estimated_hours"]) if row["estimated_hours"] is not None else None,
         "actual_hours": float(row["actual_hours"]) if row["actual_hours"] is not None else None,
         "due_date": row["due_date"].isoformat() if row["due_date"] else None,
-        "metadata": dict(row["metadata"]) if row["metadata"] else {},
+        "metadata": _json_metadata(row["metadata"]),
         "created_at": row["created_at"].isoformat() if row["created_at"] else None,
         "updated_at": row["updated_at"].isoformat() if row["updated_at"] else None,
     }
@@ -242,7 +257,7 @@ async def update_task(task_id: UUID, body: dict = Body(...)) -> dict:
         "estimated_hours": float(row["estimated_hours"]) if row["estimated_hours"] is not None else None,
         "actual_hours": float(row["actual_hours"]) if row["actual_hours"] is not None else None,
         "due_date": row["due_date"].isoformat() if row["due_date"] else None,
-        "metadata": dict(row["metadata"]) if row["metadata"] else {},
+        "metadata": _json_metadata(row["metadata"]),
         "created_at": row["created_at"].isoformat() if row["created_at"] else None,
         "updated_at": row["updated_at"].isoformat() if row["updated_at"] else None,
     }

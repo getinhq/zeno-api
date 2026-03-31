@@ -1,6 +1,7 @@
 """Service layer for registering asset versions linked to CAS content."""
 from __future__ import annotations
 
+import json
 import re
 from dataclasses import dataclass
 from typing import Any, Optional
@@ -189,6 +190,7 @@ async def register_version(data: RegisterVersionData) -> dict[str, Any]:
 
                 # Use provided filename or fall back to content_id
                 filename = data.filename or content_id
+                metadata_json = json.dumps(data.metadata) if data.metadata is not None else None
 
                 row = await conn.fetchrow(
                     """
@@ -212,7 +214,7 @@ async def register_version(data: RegisterVersionData) -> dict[str, Any]:
                     filename,
                     data.size,
                     data.publish_batch_id,
-                    data.metadata,
+                    metadata_json,
                 )
         except asyncpg.PostgresError as e:
             raise ServiceUnavailable(f"Database error: {str(e)}") from e
@@ -228,6 +230,12 @@ async def register_version(data: RegisterVersionData) -> dict[str, Any]:
     }
     meta = row["metadata"]
     if meta is not None:
-        out["metadata"] = dict(meta) if hasattr(meta, "keys") else meta
+        if isinstance(meta, str):
+            try:
+                meta = json.loads(meta)
+            except Exception:
+                meta = None
+        if isinstance(meta, dict):
+            out["metadata"] = meta
     return out
 

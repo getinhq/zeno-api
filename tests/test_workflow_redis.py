@@ -9,18 +9,15 @@ from main import app
 
 @pytest.fixture
 def client_with_redis(monkeypatch):
-    """Configure REDIS_URL and return a TestClient."""
-    # Default to local Redis; tests assume Redis is running there.
-    redis_url = os.environ.get("REDIS_URL", "redis://localhost:6379/0")
+    """Configure Redis for localhost and skip DB hosts from .env (Docker names break pytest on the host)."""
+    redis_url = os.environ.get("PYTEST_REDIS_URL", "redis://127.0.0.1:6379/0")
     from app import config
 
-    original = config.REDIS_URL
     monkeypatch.setattr(config, "REDIS_URL", redis_url)
-    try:
-        with TestClient(app) as client:
-            yield client
-    finally:
-        config.REDIS_URL = original
+    monkeypatch.setattr(config, "DATABASE_URL", None)
+    monkeypatch.setattr(config, "MONGO_URI", None)
+    with TestClient(app) as client:
+        yield client
 
 
 def test_presence_heartbeat_and_sessions(client_with_redis):

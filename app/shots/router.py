@@ -93,7 +93,7 @@ async def get_shot(shot_id: UUID = Path(...)) -> dict:
         "handle_in": row["handle_in"],
         "handle_out": row["handle_out"],
         "status": row["status"],
-        "metadata": dict(row["metadata"]) if row["metadata"] else {},
+        "metadata": _norm_metadata(row["metadata"]),
         "created_at": row["created_at"].isoformat() if row["created_at"] else None,
         "updated_at": row["updated_at"].isoformat() if row["updated_at"] else None,
     }
@@ -151,7 +151,7 @@ async def create_shot(sequence_id: UUID, body: dict = Body(...)) -> dict:
         "handle_in": row["handle_in"],
         "handle_out": row["handle_out"],
         "status": row["status"],
-        "metadata": dict(row["metadata"]) if row["metadata"] else {},
+        "metadata": _norm_metadata(row["metadata"]),
         "created_at": row["created_at"].isoformat() if row["created_at"] else None,
         "updated_at": row["updated_at"].isoformat() if row["updated_at"] else None,
     }
@@ -201,7 +201,7 @@ async def update_shot(shot_id: UUID, body: dict = Body(...)) -> dict:
         "handle_in": row["handle_in"],
         "handle_out": row["handle_out"],
         "status": row["status"],
-        "metadata": dict(row["metadata"]) if row["metadata"] else {},
+        "metadata": _norm_metadata(row["metadata"]),
         "created_at": row["created_at"].isoformat() if row["created_at"] else None,
         "updated_at": row["updated_at"].isoformat() if row["updated_at"] else None,
     }

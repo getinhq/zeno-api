@@ -13,6 +13,21 @@ from app.db import acquire
 router = APIRouter(prefix="/api/v1/projects", tags=["projects"])
 
 
+def _json_metadata(value: Any) -> dict:
+    """Normalize Postgres json/jsonb (dict, str, or legacy shapes) to a dict."""
+    if value is None:
+        return {}
+    if isinstance(value, dict):
+        return dict(value)
+    if isinstance(value, str):
+        try:
+            parsed = json.loads(value)
+            return parsed if isinstance(parsed, dict) else {}
+        except json.JSONDecodeError:
+            return {}
+    return {}
+
+
 @router.get("")
 async def list_projects(
     status: Optional[str] = Query(None, description="Optional status filter"),
@@ -67,7 +82,7 @@ async def get_project(project_id: UUID) -> dict:
         "status": row["status"],
         "start_date": row["start_date"].isoformat() if row["start_date"] else None,
         "end_date": row["end_date"].isoformat() if row["end_date"] else None,
-        "metadata": dict(row["metadata"]) if row["metadata"] else {},
+        "metadata": _json_metadata(row["metadata"]),
         "created_at": row["created_at"].isoformat() if row["created_at"] else None,
         "updated_at": row["updated_at"].isoformat() if row["updated_at"] else None,
     }
@@ -159,7 +174,7 @@ async def update_project(project_id: UUID, body: dict = Body(...)) -> dict:
         "status": row["status"],
         "start_date": row["start_date"].isoformat() if row["start_date"] else None,
         "end_date": row["end_date"].isoformat() if row["end_date"] else None,
-        "metadata": dict(row["metadata"]) if row["metadata"] else {},
+        "metadata": _json_metadata(row["metadata"]),
         "created_at": row["created_at"].isoformat() if row["created_at"] else None,
         "updated_at": row["updated_at"].isoformat() if row["updated_at"] else None,
     }

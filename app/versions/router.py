@@ -6,7 +6,7 @@ from typing import Any, Dict, Literal, Optional
 from uuid import UUID
 
 from fastapi import APIRouter, HTTPException, Path, Query, Response
-from pydantic import BaseModel, Field, validator
+from pydantic import BaseModel, Field, field_validator
 
 from app.cas.factory import get_cas_backend
 from app.cas.paths import is_valid_hash
@@ -42,14 +42,16 @@ class RegisterVersionRequest(BaseModel):
         description="Optional JSON metadata (e.g. dedup_artifact link for dual-artifact publishes)",
     )
 
-    @validator("content_id")
+    @field_validator("content_id")
+    @classmethod
     def validate_content_id(cls, v: str) -> str:
         v = v.strip().lower()
         if not is_valid_hash(v):
             raise ValueError("content_id must be a 64-character lowercase hex hash")
         return v
 
-    @validator("version")
+    @field_validator("version")
+    @classmethod
     def validate_version(cls, v: str) -> str:
         v = v.strip()
         if v == "next":
