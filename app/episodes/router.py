@@ -30,6 +30,7 @@ def _norm_metadata(value: Any) -> dict:
 async def list_episodes_for_project(
     project_id: UUID,
     code: Optional[str] = Query(None, description="Optional episode code filter"),
+    search: Optional[str] = Query(None, description="Optional text search on code/title"),
 ) -> list[dict]:
     """List episodes for a project."""
     query = """
@@ -41,6 +42,10 @@ async def list_episodes_for_project(
     if code:
         query += " AND code = $2"
         params.append(code)
+    if search:
+        idx = len(params) + 1
+        query += f" AND (code ILIKE ${idx} OR COALESCE(title, '') ILIKE ${idx})"
+        params.append(f"%{search}%")
     query += " ORDER BY episode_number, code"
 
     async with acquire() as conn:

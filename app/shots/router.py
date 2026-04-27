@@ -11,6 +11,7 @@ from fastapi import APIRouter, Body, HTTPException, Path, Query
 from app.db import acquire
 
 router = APIRouter(prefix="/api/v1", tags=["shots"])
+ALLOWED_STAGES = ("Animatics", "Layout", "Animation", "Lighting", "Comp")
 
 def _norm_metadata(value: Any) -> dict:
     if not value:
@@ -31,10 +32,12 @@ async def list_shots_for_sequence(
     sequence_id: UUID,
     status: Optional[str] = Query(None, description="Optional status filter"),
     shot_code: Optional[str] = Query(None, description="Optional shot code filter"),
+    stage: Optional[str] = Query(None, description="Optional stage filter"),
+    search: Optional[str] = Query(None, description="Optional text search by shot_code"),
 ) -> list[dict]:
     """List shots for a sequence, optionally filtered by status and shot_code."""
     query = """
-        SELECT id, sequence_id, shot_code, frame_start, frame_end,
+        SELECT id, sequence_id, shot_code, stage, frame_start, frame_end,
                handle_in, handle_out, status, metadata, created_at, updated_at
         FROM shots
         WHERE sequence_id = $1
@@ -47,6 +50,14 @@ async def list_shots_for_sequence(
         idx = len(params) + 1
         query += f" AND shot_code = ${idx}"
         params.append(shot_code)
+    if stage:
+        idx = len(params) + 1
+        query += f" AND stage = ${idx}"
+        params.append(stage)
+    if search:
+        idx = len(params) + 1
+        query += f" AND shot_code ILIKE ${idx}"
+        params.append(f"%{search}%")
     query += " ORDER BY shot_code"
 
     async with acquire() as conn:
@@ -56,6 +67,69 @@ async def list_shots_for_sequence(
             "id": str(r["id"]),
             "sequence_id": str(r["sequence_id"]),
             "shot_code": r["shot_code"],
+            "stage": r["stage"],
+            "frame_start": r["frame_start"],
+            "frame_end": r["frame_end"],
+            "handle_in": r["handle_in"],
+            "handle_out": r["handle_out"],
+            "status": r["status"],
+            "metadata": _norm_metadata(r["metadata"]),
+            "created_at": r["created_at"].isoformat() if r["created_at"] else None,
+            "updated_at": r["updated_at"].isoformat() if r["updated_at"] else None,
+        }
+        for r in rows
+    ]
+
+
+@router.get("/projects/{project_id}/shots")
+async def list_shots_for_project(
+    project_id: UUID,
+    episode_ids: Optional[list[UUID]] = Query(None, description="Optional episode_id filters"),
+    sequence_ids: Optional[list[UUID]] = Query(None, description="Optional sequence_id filters"),
+    stage: Optional[str] = Query(None, description="Optional stage filter"),
+    search: Optional[str] = Query(None, description="Optional text search by shot_code"),
+    limit: int = Query(200, ge=1, le=1000),
+    offset: int = Query(0, ge=0),
+) -> list[dict]:
+    """List shots for a project with optional filtering and pagination."""
+    query = """
+        SELECT sh.id, sh.sequence_id, sq.episode_id, sh.shot_code, sh.stage,
+               sh.frame_start, sh.frame_end, sh.handle_in, sh.handle_out,
+               sh.status, sh.metadata, sh.created_at, sh.updated_at
+        FROM shots sh
+        JOIN sequences sq ON sq.id = sh.sequence_id
+        JOIN episodes ep ON ep.id = sq.episode_id
+        WHERE ep.project_id = $1
+    """
+    params: list[Any] = [project_id]
+    if episode_ids:
+        idx = len(params) + 1
+        query += f" AND sq.episode_id = ANY(${idx}::uuid[])"
+        params.append([str(v) for v in episode_ids])
+    if sequence_ids:
+        idx = len(params) + 1
+        query += f" AND sh.sequence_id = ANY(${idx}::uuid[])"
+        params.append([str(v) for v in sequence_ids])
+    if stage:
+        idx = len(params) + 1
+        query += f" AND sh.stage = ${idx}"
+        params.append(stage)
+    if search:
+        idx = len(params) + 1
+        query += f" AND sh.shot_code ILIKE ${idx}"
+        params.append(f"%{search}%")
+    query += " ORDER BY sh.shot_code LIMIT $" + str(len(params) + 1) + " OFFSET $" + str(len(params) + 2)
+    params.extend([limit, offset])
+
+    async with acquire() as conn:
+        rows = await conn.fetch(query, *params)
+    return [
+        {
+            "id": str(r["id"]),
+            "sequence_id": str(r["sequence_id"]),
+            "episode_id": str(r["episode_id"]),
+            "shot_code": r["shot_code"],
+            "stage": r["stage"],
             "frame_start": r["frame_start"],
             "frame_end": r["frame_end"],
             "handle_in": r["handle_in"],
@@ -75,7 +149,7 @@ async def get_shot(shot_id: UUID = Path(...)) -> dict:
     async with acquire() as conn:
         row = await conn.fetchrow(
             """
-            SELECT id, sequence_id, shot_code, frame_start, frame_end,
+            SELECT id, sequence_id, shot_code, stage, frame_start, frame_end,
                    handle_in, handle_out, status, metadata, created_at, updated_at
             FROM shots
             WHERE id = $1
@@ -88,6 +162,7 @@ async def get_shot(shot_id: UUID = Path(...)) -> dict:
         "id": str(row["id"]),
         "sequence_id": str(row["sequence_id"]),
         "shot_code": row["shot_code"],
+        "stage": row["stage"],
         "frame_start": row["frame_start"],
         "frame_end": row["frame_end"],
         "handle_in": row["handle_in"],
@@ -111,22 +186,26 @@ async def create_shot(sequence_id: UUID, body: dict = Body(...)) -> dict:
     handle_in = body.get("handle_in", 0)
     handle_out = body.get("handle_out", 0)
     status = body.get("status", "pending")
+    stage = body.get("stage", "Layout")
     metadata = body.get("metadata") or {}
+    if stage not in ALLOWED_STAGES:
+        raise HTTPException(status_code=400, detail=f"stage must be one of: {', '.join(ALLOWED_STAGES)}")
 
     async with acquire() as conn:
         try:
             row = await conn.fetchrow(
                 """
                 INSERT INTO shots (
-                    sequence_id, shot_code, frame_start, frame_end,
+                    sequence_id, shot_code, stage, frame_start, frame_end,
                     handle_in, handle_out, status, metadata
                 )
-                VALUES ($1, $2, $3, $4, $5, $6, $7, $8::jsonb)
-                RETURNING id, sequence_id, shot_code, frame_start, frame_end,
+                VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9::jsonb)
+                RETURNING id, sequence_id, shot_code, stage, frame_start, frame_end,
                           handle_in, handle_out, status, metadata, created_at, updated_at
                 """,
                 sequence_id,
                 shot_code,
+                stage,
                 frame_start,
                 frame_end,
                 handle_in,
@@ -146,6 +225,7 @@ async def create_shot(sequence_id: UUID, body: dict = Body(...)) -> dict:
         "id": str(row["id"]),
         "sequence_id": str(row["sequence_id"]),
         "shot_code": row["shot_code"],
+        "stage": row["stage"],
         "frame_start": row["frame_start"],
         "frame_end": row["frame_end"],
         "handle_in": row["handle_in"],
@@ -163,7 +243,10 @@ async def update_shot(shot_id: UUID, body: dict = Body(...)) -> dict:
     fields: list[str] = []
     params: list[Any] = []
 
-    for key in ("frame_start", "frame_end", "handle_in", "handle_out", "status"):
+    if "stage" in body and body["stage"] not in ALLOWED_STAGES:
+        raise HTTPException(status_code=400, detail=f"stage must be one of: {', '.join(ALLOWED_STAGES)}")
+
+    for key in ("frame_start", "frame_end", "handle_in", "handle_out", "status", "stage"):
         if key in body:
             fields.append(f"{key} = ${len(params) + 1}")
             params.append(body[key])
@@ -181,7 +264,7 @@ async def update_shot(shot_id: UUID, body: dict = Body(...)) -> dict:
         + " WHERE id = $"
         + str(len(params))
         + """
-        RETURNING id, sequence_id, shot_code, frame_start, frame_end,
+        RETURNING id, sequence_id, shot_code, stage, frame_start, frame_end,
                   handle_in, handle_out, status, metadata, created_at, updated_at
         """
     )
@@ -196,6 +279,7 @@ async def update_shot(shot_id: UUID, body: dict = Body(...)) -> dict:
         "id": str(row["id"]),
         "sequence_id": str(row["sequence_id"]),
         "shot_code": row["shot_code"],
+        "stage": row["stage"],
         "frame_start": row["frame_start"],
         "frame_end": row["frame_end"],
         "handle_in": row["handle_in"],

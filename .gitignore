@@ -33,11 +33,11 @@ env/
 *.swo
 .DS_Store
 
-# Env files (keep .env.example)
+# Env files
 .env
 .env.local
 *.env
-!.env.example
+.env.example
 
 # Testing / coverage
 .coverage

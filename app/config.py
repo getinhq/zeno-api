@@ -34,3 +34,14 @@ MANIFEST_CACHE_TTL_SECONDS = int(os.environ.get("MANIFEST_CACHE_TTL_SECONDS", "6
 LAUNCH_TOKEN_TTL_SECONDS = int(os.environ.get("LAUNCH_TOKEN_TTL_SECONDS", "600"))
 ZENO_LAUNCH_MINT_SECRET = os.environ.get("ZENO_LAUNCH_MINT_SECRET", "").strip() or None
 LAUNCH_TOKEN_RATE_LIMIT_PER_MINUTE = int(os.environ.get("LAUNCH_TOKEN_RATE_LIMIT_PER_MINUTE", "60"))
+
+# Auth — JWT secret + TTL. In production these must be set; tests generate a
+# throwaway secret automatically if missing so the suite stays self-contained.
+ZENO_JWT_SECRET = os.environ.get("ZENO_JWT_SECRET", "").strip() or None
+ZENO_ACCESS_TOKEN_TTL_SECONDS = int(os.environ.get("ZENO_ACCESS_TOKEN_TTL_SECONDS", "900"))       # 15 min
+ZENO_REFRESH_TOKEN_TTL_SECONDS = int(os.environ.get("ZENO_REFRESH_TOKEN_TTL_SECONDS", "1209600"))  # 14 days
+
+# Feature flag — when false the frontend skips the login screen and the API
+# treats state-mutating endpoints as open (for dev/legacy tests). Flip on in
+# production via env. The auth router itself is always available.
+ENABLE_AUTH = os.environ.get("ENABLE_AUTH", "false").strip().lower() not in ("0", "false", "no")

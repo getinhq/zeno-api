@@ -4,10 +4,15 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI
 
 import app.config as app_config
+from app.auth.router import router as auth_router
 from app.cas.router import router as cas_router
 from app.db import close_pool, get_pool
+from app.events.router import router as events_router
 from app.health import run_health_checks
+from app.issues.router import router as issues_router
+from app.notifications.router import router as notifications_router
 from app.redis_conn import close_redis
+from app.users.router import router as users_router
 from app.workflow.locks_router import router as locks_router
 from app.launch.router import router as launch_router
 from app.workflow.presence_router import router as presence_router
@@ -26,7 +31,8 @@ from app.settings.store import ensure_settings_indexes
 
 def _validate_runtime_config() -> None:
     """
-    Fail fast in production-like environments when CAS is not MinIO/S3-backed.
+    Fail fast in production-like environments when CAS is not MinIO/S3-backed
+    or when the JWT secret is missing.
     """
     env = app_config.APP_ENV
     if env in ("production", "staging"):
@@ -34,6 +40,8 @@ def _validate_runtime_config() -> None:
             raise RuntimeError("CAS_STORAGE_BACKEND must be 's3' in production/staging")
         if not (app_config.S3_ENDPOINT_URL and app_config.S3_ACCESS_KEY and app_config.S3_SECRET_KEY):
             raise RuntimeError("S3_ENDPOINT_URL, S3_ACCESS_KEY, and S3_SECRET_KEY are required in production/staging")
+        if app_config.ENABLE_AUTH and not app_config.ZENO_JWT_SECRET:
+            raise RuntimeError("ZENO_JWT_SECRET must be set when ENABLE_AUTH=true in production/staging")
 
 
 @asynccontextmanager
@@ -54,6 +62,7 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(title="Zeno API", version="0.1.0", lifespan=lifespan)
 
+app.include_router(auth_router)
 app.include_router(cas_router)
 app.include_router(projects_router)
 app.include_router(episodes_router)
@@ -67,6 +76,10 @@ app.include_router(versions_router)
 app.include_router(presence_router)
 app.include_router(locks_router)
 app.include_router(launch_router)
+app.include_router(users_router)
+app.include_router(issues_router)
+app.include_router(notifications_router)
+app.include_router(events_router)
 
 
 @app.get("/")

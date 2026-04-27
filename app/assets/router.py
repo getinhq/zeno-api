@@ -12,6 +12,84 @@ from app.db import acquire
 
 router = APIRouter(prefix="/api/v1", tags=["assets"])
 
+ALLOWED_ASSET_PIPELINE_STAGES = frozenset(
+    ("modelling", "texturing", "rigging", "lookdev"),
+)
+
+ALLOWED_PIPELINE_STAGE_STATUS = frozenset(
+    ("not_started", "in_progress", "review", "done", "approved", "na"),
+)
+
+_PIPELINE_ORDER = ("modelling", "texturing", "rigging", "lookdev")
+
+
+def _norm_pipeline_stages(value: Any) -> list[str]:
+    """Normalize to an ordered subset of allowed pipeline stage labels."""
+    order = ("modelling", "texturing", "rigging", "lookdev")
+    if value is None:
+        return []
+    if isinstance(value, (list, tuple)):
+        raw = {str(x).strip().lower() for x in value}
+        return [s for s in order if s in raw]
+    return []
+
+
+def _norm_pipeline_stage_status(value: Any) -> dict[str, str]:
+    """Per asset-pipeline-stage status: not_started | in_progress | review | done | approved | na."""
+    out: dict[str, str] = {}
+    if isinstance(value, dict):
+        for k, v in value.items():
+            ks = str(k).strip().lower()
+            if ks not in ALLOWED_ASSET_PIPELINE_STAGES:
+                continue
+            vs = str(v).strip().lower() if v is not None else "not_started"
+            if vs not in ALLOWED_PIPELINE_STAGE_STATUS:
+                vs = "not_started"
+            out[ks] = vs
+    for s in _PIPELINE_ORDER:
+        if s not in out:
+            out[s] = "not_started"
+    return out
+
+
+def _stages_from_status(status: dict[str, str]) -> list[str]:
+    return [s for s in _PIPELINE_ORDER if status.get(s) not in (None, "", "na")]
+
+
+def _status_from_legacy_stages(legacy: list[str]) -> dict[str, str]:
+    leg = set(legacy)
+    return {s: ("not_started" if s in leg else "na") for s in _PIPELINE_ORDER}
+
+
+def _row_pipeline_stage_status(row: Any) -> dict[str, str]:
+    raw = row["pipeline_stage_status"] if "pipeline_stage_status" in row else None
+    if raw is None or (isinstance(raw, dict) and len(raw) == 0):
+        return _status_from_legacy_stages(_norm_pipeline_stages(row["pipeline_stages"]))
+    return _norm_pipeline_stage_status(raw)
+
+
+def _row_pipeline_stages(row: Any) -> list[str]:
+    raw = row["pipeline_stage_status"] if "pipeline_stage_status" in row else None
+    if raw is None or (isinstance(raw, dict) and len(raw) == 0):
+        return _norm_pipeline_stages(row["pipeline_stages"])
+    return _stages_from_status(_norm_pipeline_stage_status(raw))
+
+
+def _asset_row_dict(row: Any) -> dict:
+    return {
+        "id": str(row["id"]),
+        "project_id": str(row["project_id"]),
+        "type": row["type"],
+        "name": row["name"],
+        "code": row["code"],
+        "pipeline_stages": _row_pipeline_stages(row),
+        "pipeline_stage_status": _row_pipeline_stage_status(row),
+        "metadata": _norm_metadata(row["metadata"]),
+        "created_at": row["created_at"].isoformat() if row["created_at"] else None,
+        "updated_at": row["updated_at"].isoformat() if row["updated_at"] else None,
+    }
+
+
 def _norm_metadata(value: Any) -> dict:
     """Normalize asyncpg json/jsonb values to a dict."""
     if not value:
@@ -36,7 +114,8 @@ async def list_assets_for_project(
 ) -> list[dict]:
     """List assets for a project, optionally filtered by type/code."""
     query = """
-        SELECT id, project_id, type, name, code, metadata, created_at, updated_at
+        SELECT id, project_id, type, name, code, pipeline_stages, pipeline_stage_status, metadata,
+               created_at, updated_at
         FROM assets
         WHERE project_id = $1
     """
@@ -52,19 +131,7 @@ async def list_assets_for_project(
 
     async with acquire() as conn:
         rows = await conn.fetch(query, *params)
-    return [
-        {
-            "id": str(r["id"]),
-            "project_id": str(r["project_id"]),
-            "type": r["type"],
-            "name": r["name"],
-            "code": r["code"],
-            "metadata": _norm_metadata(r["metadata"]),
-            "created_at": r["created_at"].isoformat() if r["created_at"] else None,
-            "updated_at": r["updated_at"].isoformat() if r["updated_at"] else None,
-        }
-        for r in rows
-    ]
+    return [_asset_row_dict(r) for r in rows]
 
 
 @router.get("/assets/{asset_id}")
@@ -73,7 +140,8 @@ async def get_asset(asset_id: UUID = Path(...)) -> dict:
     async with acquire() as conn:
         row = await conn.fetchrow(
             """
-            SELECT id, project_id, type, name, code, metadata, created_at, updated_at
+            SELECT id, project_id, type, name, code, pipeline_stages, pipeline_stage_status, metadata,
+                   created_at, updated_at
             FROM assets
             WHERE id = $1
             """,
@@ -81,16 +149,7 @@ async def get_asset(asset_id: UUID = Path(...)) -> dict:
         )
     if not row:
         raise HTTPException(status_code=404, detail="Asset not found")
-    return {
-        "id": str(row["id"]),
-        "project_id": str(row["project_id"]),
-        "type": row["type"],
-        "name": row["name"],
-        "code": row["code"],
-        "metadata": _norm_metadata(row["metadata"]),
-        "created_at": row["created_at"].isoformat() if row["created_at"] else None,
-        "updated_at": row["updated_at"].isoformat() if row["updated_at"] else None,
-    }
+    return _asset_row_dict(row)
 
 
 @router.post("/projects/{project_id}/assets")
@@ -102,19 +161,28 @@ async def create_asset(project_id: UUID, body: dict = Body(...)) -> dict:
     if not a_type or not name or not code:
         raise HTTPException(status_code=400, detail="type, name, and code are required")
     metadata = body.get("metadata") or {}
+    pipeline_stages = _norm_pipeline_stages(body.get("pipeline_stages"))
+    if "pipeline_stage_status" in body:
+        pss = _norm_pipeline_stage_status(body.get("pipeline_stage_status"))
+        pipeline_stages = _stages_from_status(pss)
+    else:
+        pss = _status_from_legacy_stages(pipeline_stages)
 
     async with acquire() as conn:
         try:
             row = await conn.fetchrow(
                 """
-                INSERT INTO assets (project_id, type, name, code, metadata)
-                VALUES ($1, $2, $3, $4, $5::jsonb)
-                RETURNING id, project_id, type, name, code, metadata, created_at, updated_at
+                INSERT INTO assets (project_id, type, name, code, pipeline_stages, pipeline_stage_status, metadata)
+                VALUES ($1, $2, $3, $4, $5::text[], $6::jsonb, $7::jsonb)
+                RETURNING id, project_id, type, name, code, pipeline_stages, pipeline_stage_status, metadata,
+                          created_at, updated_at
                 """,
                 project_id,
                 a_type,
                 name,
                 code,
+                pipeline_stages,
+                json.dumps(pss),
                 json.dumps(metadata) if metadata else "{}",
             )
         except asyncpg.ForeignKeyViolationError as e:
@@ -125,16 +193,7 @@ async def create_asset(project_id: UUID, body: dict = Body(...)) -> dict:
                 detail="Asset code must be unique per project",
             ) from e
 
-    return {
-        "id": str(row["id"]),
-        "project_id": str(row["project_id"]),
-        "type": row["type"],
-        "name": row["name"],
-        "code": row["code"],
-        "metadata": _norm_metadata(row["metadata"]),
-        "created_at": row["created_at"].isoformat() if row["created_at"] else None,
-        "updated_at": row["updated_at"].isoformat() if row["updated_at"] else None,
-    }
+    return _asset_row_dict(row)
 
 
 @router.patch("/assets/{asset_id}")
@@ -152,6 +211,15 @@ async def update_asset(asset_id: UUID, body: dict = Body(...)) -> dict:
     if "metadata" in body:
         fields.append(f"metadata = ${len(params) + 1}::jsonb")
         params.append(json.dumps(body["metadata"]) if body["metadata"] is not None else "{}")
+    if "pipeline_stages" in body and "pipeline_stage_status" not in body:
+        fields.append(f"pipeline_stages = ${len(params) + 1}::text[]")
+        params.append(_norm_pipeline_stages(body["pipeline_stages"]))
+    if "pipeline_stage_status" in body:
+        pss = _norm_pipeline_stage_status(body.get("pipeline_stage_status"))
+        fields.append(f"pipeline_stage_status = ${len(params) + 1}::jsonb")
+        params.append(json.dumps(pss))
+        fields.append(f"pipeline_stages = ${len(params) + 1}::text[]")
+        params.append(_stages_from_status(pss))
 
     if not fields:
         raise HTTPException(status_code=400, detail="No updatable fields provided")
@@ -163,7 +231,8 @@ async def update_asset(asset_id: UUID, body: dict = Body(...)) -> dict:
         + " WHERE id = $"
         + str(len(params))
         + """
-        RETURNING id, project_id, type, name, code, metadata, created_at, updated_at
+        RETURNING id, project_id, type, name, code, pipeline_stages, pipeline_stage_status, metadata,
+                  created_at, updated_at
         """
     )
 
@@ -179,14 +248,5 @@ async def update_asset(asset_id: UUID, body: dict = Body(...)) -> dict:
     if not row:
         raise HTTPException(status_code=404, detail="Asset not found")
 
-    return {
-        "id": str(row["id"]),
-        "project_id": str(row["project_id"]),
-        "type": row["type"],
-        "name": row["name"],
-        "code": row["code"],
-        "metadata": _norm_metadata(row["metadata"]),
-        "created_at": row["created_at"].isoformat() if row["created_at"] else None,
-        "updated_at": row["updated_at"].isoformat() if row["updated_at"] else None,
-    }
+    return _asset_row_dict(row)
 

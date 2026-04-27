@@ -49,6 +49,10 @@ class RegisterVersionData:
     size: Optional[int]
     publish_batch_id: Optional[str] = None
     metadata: Optional[dict[str, Any]] = None
+    pipeline_stage: str = ""
+    task_id: Optional[str] = None
+    feedback: Optional[str] = None
+    status: str = "pending"
 
 
 async def _resolve_project_id(conn: asyncpg.Connection, project_spec: str) -> Optional[str]:
@@ -79,6 +83,7 @@ async def _pick_version_number(
     representation: str,
     version_spec: str,
     *,
+    pipeline_stage: str = "",
     publish_batch_id: Optional[str] = None,
 ) -> tuple[int, bool]:
     """Return (version_number, is_explicit)."""
@@ -90,26 +95,37 @@ async def _pick_version_number(
                 """
                 SELECT version_number
                 FROM versions
-                WHERE asset_id = $1 AND publish_batch_id = $2
+                WHERE asset_id = $1 AND publish_batch_id = $2 AND pipeline_stage = $3
                 ORDER BY created_at ASC
                 LIMIT 1
                 """,
                 asset_id,
                 publish_batch_id,
+                pipeline_stage,
             )
             if row and row["version_number"] is not None:
                 return int(row["version_number"]), False
             row = await conn.fetchrow(
-                "SELECT max(version_number) AS maxver FROM versions WHERE asset_id = $1",
+                """
+                SELECT max(version_number) AS maxver
+                FROM versions
+                WHERE asset_id = $1 AND pipeline_stage = $2
+                """,
                 asset_id,
+                pipeline_stage,
             )
             maxver = row["maxver"] if row and row["maxver"] is not None else None
             return ((maxver + 1) if maxver is not None else 1), False
 
         row = await conn.fetchrow(
-            "SELECT max(version_number) AS maxver FROM versions WHERE asset_id = $1 AND representation = $2",
+            """
+            SELECT max(version_number) AS maxver
+            FROM versions
+            WHERE asset_id = $1 AND representation = $2 AND pipeline_stage = $3
+            """,
             asset_id,
             representation,
+            pipeline_stage,
         )
         maxver = row["maxver"] if row and row["maxver"] is not None else None
         return ((maxver + 1) if maxver is not None else 1), False
@@ -149,6 +165,15 @@ async def register_version(data: RegisterVersionData) -> dict[str, Any]:
     if not is_valid_hash(content_id):
         raise ValueError("content_id must be a 64-character lowercase hex hash")
 
+    pipeline_stage = (data.pipeline_stage or "").strip().lower()
+    if pipeline_stage not in {"", "modelling", "texturing", "rigging", "lookdev"}:
+        raise ValueError(
+            "pipeline_stage must be empty (legacy) or one of: modelling, texturing, rigging, lookdev"
+        )
+    version_status = (data.status or "pending").strip().lower()
+    if version_status not in {"pending", "in_review", "approved", "rejected"}:
+        raise ValueError("status must be one of: pending, in_review, approved, rejected")
+
     async with acquire() as conn:
         try:
             async with conn.transaction():
@@ -165,6 +190,7 @@ async def register_version(data: RegisterVersionData) -> dict[str, Any]:
                     asset_id,
                     data.representation,
                     data.version,
+                    pipeline_stage=pipeline_stage,
                     publish_batch_id=data.publish_batch_id,
                 )
 
@@ -174,10 +200,12 @@ async def register_version(data: RegisterVersionData) -> dict[str, Any]:
                         SELECT 1
                         FROM versions
                         WHERE asset_id = $1 AND representation = $2 AND version_number = $3
+                          AND pipeline_stage = $4
                         """,
                         asset_id,
                         data.representation,
                         version_number,
+                        pipeline_stage,
                     )
                     if exists_row:
                         raise VersionConflict(
@@ -197,24 +225,32 @@ async def register_version(data: RegisterVersionData) -> dict[str, Any]:
                     INSERT INTO versions (
                         asset_id,
                         representation,
+                        pipeline_stage,
                         version_number,
                         content_id,
                         filename,
                         size_bytes,
+                        task_id,
                         publish_batch_id,
-                        metadata
+                        metadata,
+                        feedback,
+                        status
                     )
-                    VALUES ($1, $2, $3, $4, $5, $6, $7::uuid, $8::jsonb)
-                    RETURNING id, asset_id, representation, version_number, content_id, filename, size_bytes, metadata
+                    VALUES ($1, $2, $3, $4, $5, $6, $7, $8::uuid, $9::uuid, $10::jsonb, $11, $12)
+                    RETURNING id, asset_id, representation, pipeline_stage, version_number, content_id, filename, size_bytes, task_id, metadata, feedback, status
                     """,
                     asset_id,
                     data.representation,
+                    pipeline_stage,
                     version_number,
                     content_id,
                     filename,
                     data.size,
+                    data.task_id,
                     data.publish_batch_id,
                     metadata_json,
+                    data.feedback,
+                    version_status,
                 )
         except asyncpg.PostgresError as e:
             raise ServiceUnavailable(f"Database error: {str(e)}") from e
@@ -227,6 +263,9 @@ async def register_version(data: RegisterVersionData) -> dict[str, Any]:
         "content_id": row["content_id"],
         "filename": row["filename"],
         "size": row["size_bytes"],
+        "task_id": str(row["task_id"]) if row["task_id"] else None,
+        "feedback": row["feedback"],
+        "status": row["status"],
     }
     meta = row["metadata"]
     if meta is not None:

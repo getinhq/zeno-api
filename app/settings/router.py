@@ -3,8 +3,9 @@ from __future__ import annotations
 
 from typing import Optional
 
-from fastapi import APIRouter, Body, HTTPException
+from fastapi import APIRouter, Body, Depends, HTTPException
 
+from app.auth.deps import require_role
 from app.settings.store import (
     get_effective_settings,
     get_global_settings,
@@ -14,6 +15,7 @@ from app.settings.store import (
 )
 
 router = APIRouter(prefix="/api/v1/settings", tags=["settings"])
+ALLOWED_STAGES = {"Animatics", "Layout", "Animation", "Lighting", "Comp"}
 
 
 def _json_safe(d: dict) -> dict:
@@ -22,6 +24,25 @@ def _json_safe(d: dict) -> dict:
     if "_id" in out and hasattr(out["_id"], "__str__"):
         out["_id"] = str(out["_id"])
     return out
+
+
+def _validate_stage_mapping(extra: Optional[dict]) -> None:
+    if not isinstance(extra, dict):
+        return
+    mapping = extra.get("stage_dcc_mapping")
+    if mapping is None:
+        return
+    if not isinstance(mapping, dict):
+        raise HTTPException(status_code=400, detail="extra.stage_dcc_mapping must be an object")
+    invalid_keys = [k for k in mapping.keys() if k not in ALLOWED_STAGES]
+    if invalid_keys:
+        raise HTTPException(
+            status_code=400,
+            detail=f"stage_dcc_mapping keys must be one of: {', '.join(sorted(ALLOWED_STAGES))}",
+        )
+    invalid_values = [v for v in mapping.values() if not isinstance(v, str) or not v.strip()]
+    if invalid_values:
+        raise HTTPException(status_code=400, detail="stage_dcc_mapping values must be non-empty strings")
 
 
 @router.get("/global")
@@ -56,7 +77,11 @@ async def get_effective(env: str = "development", project_id: Optional[str] = No
 
 
 @router.put("/global")
-async def put_global(env: str = "development", body: dict = Body(...)) -> dict:
+async def put_global(
+    env: str = "development",
+    body: dict = Body(...),
+    _user=Depends(require_role("pipeline")),
+) -> dict:
     """Upsert global settings for an environment. Body: resolution?, frame?, qc_checks?, extra?."""
     if env not in ("production", "staging", "development"):
         raise HTTPException(status_code=400, detail="env must be production, staging, or development")
@@ -71,11 +96,16 @@ async def put_global(env: str = "development", body: dict = Body(...)) -> dict:
 
 
 @router.put("/project/{project_id}")
-async def put_project_settings_overrides(project_id: str, body: dict = Body(...)) -> dict:
+async def put_project_settings_overrides(
+    project_id: str,
+    body: dict = Body(...),
+    _user=Depends(require_role("pipeline")),
+) -> dict:
     """Upsert project settings. Body: overrides?, extra?."""
     try:
         overrides = body.get("overrides")
         extra = body.get("extra")
+        _validate_stage_mapping(extra)
         return upsert_project_settings(project_id, overrides=overrides, extra=extra)
     except RuntimeError as e:
         raise HTTPException(status_code=503, detail=str(e)) from e

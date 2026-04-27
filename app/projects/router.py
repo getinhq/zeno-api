@@ -6,11 +6,16 @@ from typing import Any, Optional
 from uuid import UUID
 
 import asyncpg
-from fastapi import APIRouter, Body, HTTPException, Query
+from fastapi import APIRouter, Body, Depends, HTTPException, Query
 
+from app.auth.deps import optional_current_user
 from app.db import acquire
+from app.events import log as events_log
 
 router = APIRouter(prefix="/api/v1/projects", tags=["projects"])
+
+INACTIVE_STATUSES = ("completed", "approved", "archived")
+ACTIVE_STATUSES = ("active", "on_hold")
 
 
 def _json_metadata(value: Any) -> dict:
@@ -30,18 +35,38 @@ def _json_metadata(value: Any) -> dict:
 
 @router.get("")
 async def list_projects(
-    status: Optional[str] = Query(None, description="Optional status filter"),
+    status: Optional[str] = Query(
+        "active",
+        description=(
+            "Filter: 'active' (active+on_hold), 'inactive' (completed+approved+archived), "
+            "'all', or an exact status value."
+        ),
+    ),
     code: Optional[str] = Query(None, description="Optional exact code filter"),
 ) -> list[dict]:
-    """List projects (id, name, code, status), optionally filtered by status/code."""
+    """List projects (id, name, code, status), optionally filtered by status/code.
+
+    ``status`` accepts the virtual buckets ``active`` / ``inactive`` / ``all``
+    as well as a raw status string for backward compatibility.
+    """
     query = "SELECT id, name, code, status, created_at FROM projects"
     conditions: list[str] = []
     params: list[Any] = []
-    if status:
-        conditions.append("status = $1")
-        params.append(status)
+
+    status_key = (status or "").strip().lower()
+    if status_key in ("", "all"):
+        pass
+    elif status_key == "active":
+        conditions.append("status = ANY($1::text[])")
+        params.append(list(ACTIVE_STATUSES))
+    elif status_key == "inactive":
+        conditions.append("status = ANY($1::text[])")
+        params.append(list(INACTIVE_STATUSES))
+    else:
+        conditions.append(f"status = ${len(params) + 1}")
+        params.append(status_key)
     if code:
-        conditions.append(f"{'status = $1 AND ' if status else ''}code = ${len(params) + 1}")
+        conditions.append(f"code = ${len(params) + 1}")
         params.append(code)
     if conditions:
         query += " WHERE " + " AND ".join(conditions)
@@ -128,7 +153,11 @@ async def create_project(body: dict = Body(...)) -> dict:
 
 
 @router.patch("/{project_id}")
-async def update_project(project_id: UUID, body: dict = Body(...)) -> dict:
+async def update_project(
+    project_id: UUID,
+    body: dict = Body(...),
+    current=Depends(optional_current_user),
+) -> dict:
     """Partially update a project."""
     fields: list[str] = []
     params: list[Any] = []
@@ -159,13 +188,24 @@ async def update_project(project_id: UUID, body: dict = Body(...)) -> dict:
     )
 
     async with acquire() as conn:
+        previous = await conn.fetchval("SELECT status FROM projects WHERE id = $1", project_id)
         try:
             row = await conn.fetchrow(query, *params)
         except asyncpg.UniqueViolationError as e:
             raise HTTPException(status_code=409, detail=str(e)) from e
 
-    if not row:
-        raise HTTPException(status_code=404, detail="Project not found")
+        if not row:
+            raise HTTPException(status_code=404, detail="Project not found")
+
+        new_status = row["status"]
+        if "status" in body and previous != new_status:
+            await events_log.emit(
+                conn,
+                project_id=row["id"],
+                actor_id=getattr(current, "id", None),
+                kind="project.status.changed",
+                payload={"from": previous, "to": new_status},
+            )
 
     return {
         "id": str(row["id"]),
