@@ -9,6 +9,7 @@ import asyncpg
 from fastapi import APIRouter, Body, HTTPException, Path, Query
 
 from app.db import acquire
+from app.tenancy import ensure_in_scope
 
 router = APIRouter(prefix="/api/v1", tags=["assets"])
 
@@ -130,6 +131,7 @@ async def list_assets_for_project(
     query += " ORDER BY code"
 
     async with acquire() as conn:
+        await ensure_in_scope(conn, "project", project_id)
         rows = await conn.fetch(query, *params)
     return [_asset_row_dict(r) for r in rows]
 
@@ -138,6 +140,7 @@ async def list_assets_for_project(
 async def get_asset(asset_id: UUID = Path(...)) -> dict:
     """Get one asset by id."""
     async with acquire() as conn:
+        await ensure_in_scope(conn, "asset", asset_id)
         row = await conn.fetchrow(
             """
             SELECT id, project_id, type, name, code, pipeline_stages, pipeline_stage_status, metadata,
@@ -169,6 +172,7 @@ async def create_asset(project_id: UUID, body: dict = Body(...)) -> dict:
         pss = _status_from_legacy_stages(pipeline_stages)
 
     async with acquire() as conn:
+        await ensure_in_scope(conn, "project", project_id)
         try:
             row = await conn.fetchrow(
                 """
@@ -237,6 +241,7 @@ async def update_asset(asset_id: UUID, body: dict = Body(...)) -> dict:
     )
 
     async with acquire() as conn:
+        await ensure_in_scope(conn, "asset", asset_id)
         try:
             row = await conn.fetchrow(query, *params)
         except asyncpg.UniqueViolationError as e:

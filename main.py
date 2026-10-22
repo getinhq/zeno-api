@@ -1,7 +1,7 @@
 """Zeno API entrypoint."""
 from contextlib import asynccontextmanager
 
-from fastapi import FastAPI
+from fastapi import Depends, FastAPI
 
 import app.config as app_config
 from app.auth.router import router as auth_router
@@ -27,6 +27,7 @@ from app.resolver.router import router as resolver_router
 from app.settings.router import router as settings_router
 from app.manifests.store import ensure_manifest_indexes
 from app.settings.store import ensure_settings_indexes
+from app.tenancy import bind_request_identity
 
 
 def _validate_runtime_config() -> None:
@@ -60,7 +61,13 @@ async def lifespan(app: FastAPI):
     await close_redis()
 
 
-app = FastAPI(title="Zeno API", version="0.1.0", lifespan=lifespan)
+app = FastAPI(
+    title="Zeno API",
+    version="0.1.0",
+    lifespan=lifespan,
+    # Authenticates (when ENABLE_AUTH) and binds the caller's organization for every route.
+    dependencies=[Depends(bind_request_identity)],
+)
 
 app.include_router(auth_router)
 app.include_router(cas_router)

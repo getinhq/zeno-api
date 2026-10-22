@@ -11,6 +11,7 @@ import asyncpg
 from app.cas.factory import get_cas_backend
 from app.cas.paths import is_valid_hash
 from app.db import acquire
+from app.tenancy import current_org_id
 
 
 class NotFound(Exception):
@@ -56,10 +57,13 @@ class RegisterVersionData:
 
 
 async def _resolve_project_id(conn: asyncpg.Connection, project_spec: str) -> Optional[str]:
-    if is_uuid_like(project_spec):
-        row = await conn.fetchrow("SELECT id FROM projects WHERE id = $1", project_spec)
-    else:
-        row = await conn.fetchrow("SELECT id FROM projects WHERE code = $1", project_spec)
+    column = "id" if is_uuid_like(project_spec) else "code"
+    row = await conn.fetchrow(
+        f"SELECT id FROM projects WHERE {column} = $1"
+        " AND ($2::uuid IS NULL OR organization_id = $2)",
+        project_spec,
+        current_org_id(),
+    )
     return str(row["id"]) if row else None
 
 

@@ -9,6 +9,8 @@ from fastapi import APIRouter, Header, HTTPException, Query, Request, Response
 from pydantic import BaseModel
 
 import app.config as app_config
+from app.db import acquire
+from app.tenancy import current_org_id, current_user, ensure_in_scope
 from app.launch.dcc_settings import resolve_dcc_executable_path
 from app.launch.models import (
     ExchangeLaunchTokenResponse,
@@ -52,10 +54,21 @@ async def mint_launch_token(
     x_zeno_launch_mint_key: Optional[str] = Header(None, alias="X-Zeno-Launch-Mint-Key"),
 ) -> MintLaunchTokenResponse:
     """
-    Mint a short-lived opaque token. Caller must be authorized to open the target resource
-    (enforce via gateway/auth when integrated). Protected by X-Zeno-Launch-Mint-Key in production.
+    Mint a short-lived opaque token for Open in DCC.
+
+    A logged-in caller is authorized by their bearer token, and every entity in the
+    context must belong to their organization. Callers without a user token (service
+    integrations) must present X-Zeno-Launch-Mint-Key in production.
     """
-    _require_mint_secret(x_zeno_launch_mint_key)
+    if current_user() is None:
+        _require_mint_secret(x_zeno_launch_mint_key)
+    if current_org_id() is not None:
+        ctx = body.context
+        async with acquire() as conn:
+            await ensure_in_scope(conn, "project", ctx.project_id)
+            await ensure_in_scope(conn, "asset", ctx.asset_id)
+            await ensure_in_scope(conn, "shot", ctx.shot_id)
+            await ensure_in_scope(conn, "task", ctx.task_id)
 
     ok = await check_rate_limit(
         _client_key(request),

@@ -16,6 +16,7 @@ from app.events import log as events_log
 from app.manifests.cache import get_cached_manifest, set_cached_manifest
 from app.manifests.store import get_manifest_document
 from app.db import acquire
+from app.tenancy import current_org_id, ensure_in_scope
 from app.notifications import service as notifications_service
 from app.versions.service import (
     ContentNotFoundInCas,
@@ -233,7 +234,12 @@ async def register_version_endpoint(
     )
     if task_uuid is not None:
         async with acquire() as conn:
-            project_row = await conn.fetchrow("SELECT id FROM projects WHERE code = $1 OR id::text = $1", body.project)
+            project_row = await conn.fetchrow(
+                "SELECT id FROM projects WHERE (code = $1 OR id::text = $1)"
+                " AND ($2::uuid IS NULL OR organization_id = $2)",
+                body.project,
+                current_org_id(),
+            )
             if not project_row:
                 raise HTTPException(status_code=404, detail="Project not found")
             asset_row = await conn.fetchrow(
@@ -359,6 +365,7 @@ async def list_versions_for_asset(
         raise HTTPException(status_code=400, detail="Invalid pipeline_stage filter")
 
     async with acquire() as conn:
+        await ensure_in_scope(conn, "asset", asset_id)
         rows = await conn.fetch(
             """
             SELECT id, representation, pipeline_stage, version_number, content_id, filename, size_bytes,
@@ -430,6 +437,7 @@ async def update_version(
         + " RETURNING id, feedback, status"
     )
     async with acquire() as conn:
+        await ensure_in_scope(conn, "version", version_id)
         row = await conn.fetchrow(
             query.replace("RETURNING id, feedback, status", "RETURNING id, task_id, feedback, status"),
             *params,
@@ -508,6 +516,7 @@ async def latest_content_id(
                     AND (a.code = $2 OR a.id::text = $2)
                     AND v.representation = $3
                     AND v.pipeline_stage = $4
+                    AND ($5::uuid IS NULL OR p.organization_id = $5)
                 ORDER BY v.version_number DESC
                 LIMIT 1
                 """,
@@ -515,6 +524,7 @@ async def latest_content_id(
                 asset,
                 representation,
                 stage,
+                current_org_id(),
             )
         else:
             row = await conn.fetchrow(
@@ -528,6 +538,7 @@ async def latest_content_id(
                     AND (a.code = $2 OR a.id::text = $2)
                     AND v.representation = $3
                     AND v.pipeline_stage = $4
+                    AND ($5::uuid IS NULL OR p.organization_id = $5)
                 ORDER BY v.version_number DESC
                 LIMIT 1
                 """,
@@ -535,6 +546,7 @@ async def latest_content_id(
                 asset,
                 representation,
                 stage,
+                current_org_id(),
             )
     if not row:
         raise HTTPException(status_code=404, detail="No version found for project/asset/representation")

@@ -45,3 +45,18 @@ ZENO_REFRESH_TOKEN_TTL_SECONDS = int(os.environ.get("ZENO_REFRESH_TOKEN_TTL_SECO
 # treats state-mutating endpoints as open (for dev/legacy tests). Flip on in
 # production via env. The auth router itself is always available.
 ENABLE_AUTH = os.environ.get("ENABLE_AUTH", "false").strip().lower() not in ("0", "false", "no")
+
+# Hosted / multi-tenant
+# Self-service signup (creates a new organization). Disable on private deployments.
+ALLOW_SIGNUP = os.environ.get("ZENO_ALLOW_SIGNUP", "true").strip().lower() not in ("0", "false", "no")
+# Public URL of the dashboard, used to build invite links (e.g. https://app.zeno.studio).
+PUBLIC_APP_URL = os.environ.get("ZENO_PUBLIC_APP_URL", "http://localhost:5173").strip().rstrip("/")
+INVITE_TTL_DAYS = int(os.environ.get("ZENO_INVITE_TTL_DAYS", "14"))
+
+# Optional SMTP for invite emails. Invites always produce a copyable link; email is extra.
+SMTP_HOST = os.environ.get("ZENO_SMTP_HOST", "").strip() or None
+SMTP_PORT = int(os.environ.get("ZENO_SMTP_PORT", "587"))
+SMTP_USERNAME = os.environ.get("ZENO_SMTP_USERNAME", "").strip() or None
+SMTP_PASSWORD = os.environ.get("ZENO_SMTP_PASSWORD", "").strip() or None
+SMTP_FROM = os.environ.get("ZENO_SMTP_FROM", "").strip() or None
+SMTP_STARTTLS = os.environ.get("ZENO_SMTP_STARTTLS", "true").strip().lower() not in ("0", "false", "no")

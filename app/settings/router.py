@@ -6,6 +6,8 @@ from typing import Optional
 from fastapi import APIRouter, Body, Depends, HTTPException
 
 from app.auth.deps import require_role
+from app.db import acquire
+from app.tenancy import ensure_in_scope, settings_key
 from app.settings.store import (
     get_effective_settings,
     get_global_settings,
@@ -45,13 +47,18 @@ def _validate_stage_mapping(extra: Optional[dict]) -> None:
         raise HTTPException(status_code=400, detail="stage_dcc_mapping values must be non-empty strings")
 
 
+async def _ensure_project(project_id: str) -> None:
+    async with acquire() as conn:
+        await ensure_in_scope(conn, "project", project_id)
+
+
 @router.get("/global")
 async def get_global(env: str = "development") -> dict:
     """Get global settings for an environment (production, staging, development)."""
     if env not in ("production", "staging", "development"):
         raise HTTPException(status_code=400, detail="env must be production, staging, or development")
     try:
-        return _json_safe(get_global_settings(env))
+        return _json_safe(get_global_settings(settings_key(env)))
     except RuntimeError as e:
         raise HTTPException(status_code=503, detail=str(e)) from e
 
@@ -59,6 +66,7 @@ async def get_global(env: str = "development") -> dict:
 @router.get("/project/{project_id}")
 async def get_project_settings_overrides(project_id: str) -> dict:
     """Get project-specific settings document, or 404 if none."""
+    await _ensure_project(project_id)
     doc = get_project_settings(project_id)
     if doc is None:
         raise HTTPException(status_code=404, detail="No project settings found")
@@ -70,8 +78,10 @@ async def get_effective(env: str = "development", project_id: Optional[str] = No
     """Get effective settings (global merged with project overrides)."""
     if env not in ("production", "staging", "development"):
         raise HTTPException(status_code=400, detail="env must be production, staging, or development")
+    if project_id:
+        await _ensure_project(project_id)
     try:
-        return _json_safe(get_effective_settings(env, project_id))
+        return _json_safe(get_effective_settings(settings_key(env), project_id))
     except RuntimeError as e:
         raise HTTPException(status_code=503, detail=str(e)) from e
 
@@ -86,7 +96,7 @@ async def put_global(
     if env not in ("production", "staging", "development"):
         raise HTTPException(status_code=400, detail="env must be production, staging, or development")
     try:
-        return upsert_global_settings(env, body)
+        return upsert_global_settings(settings_key(env), body)
     except RuntimeError as e:
         raise HTTPException(status_code=503, detail=str(e)) from e
     except ValueError as e:
@@ -102,6 +112,7 @@ async def put_project_settings_overrides(
     _user=Depends(require_role("pipeline")),
 ) -> dict:
     """Upsert project settings. Body: overrides?, extra?."""
+    await _ensure_project(project_id)
     try:
         overrides = body.get("overrides")
         extra = body.get("extra")

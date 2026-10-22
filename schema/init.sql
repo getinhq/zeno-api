@@ -524,3 +524,56 @@ CREATE TABLE IF NOT EXISTS events (
 );
 CREATE INDEX IF NOT EXISTS idx_events_project_created ON events(project_id, created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_events_kind            ON events(kind);
+
+-- 18. Organizations (multi-tenant workspaces). Each user belongs to one organization;
+--     every project belongs to one organization. API requests are scoped by it.
+CREATE TABLE IF NOT EXISTS organizations (
+    id          UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    name        TEXT NOT NULL,
+    slug        TEXT NOT NULL UNIQUE,
+    owner_id    UUID REFERENCES users(id) ON DELETE SET NULL,
+    plan        TEXT NOT NULL DEFAULT 'free',
+    settings    JSONB NOT NULL DEFAULT '{}'::jsonb,
+    created_at  TIMESTAMPTZ DEFAULT NOW(),
+    updated_at  TIMESTAMPTZ DEFAULT NOW()
+);
+
+DROP TRIGGER IF EXISTS organizations_timestamp ON organizations;
+CREATE TRIGGER organizations_timestamp
+    BEFORE UPDATE ON organizations
+    FOR EACH ROW EXECUTE PROCEDURE update_timestamp();
+
+ALTER TABLE users    ADD COLUMN IF NOT EXISTS organization_id UUID REFERENCES organizations(id) ON DELETE CASCADE;
+ALTER TABLE projects ADD COLUMN IF NOT EXISTS organization_id UUID REFERENCES organizations(id) ON DELETE CASCADE;
+CREATE INDEX IF NOT EXISTS idx_users_organization    ON users(organization_id);
+CREATE INDEX IF NOT EXISTS idx_projects_organization ON projects(organization_id);
+
+-- Backfill: rows from the single-tenant era move into a "Default Studio" organization,
+-- owned by its oldest pipeline user.
+DO $$
+DECLARE
+    default_org UUID;
+BEGIN
+    IF EXISTS (SELECT 1 FROM users WHERE organization_id IS NULL)
+       OR EXISTS (SELECT 1 FROM projects WHERE organization_id IS NULL) THEN
+        SELECT id INTO default_org FROM organizations WHERE slug = 'default';
+        IF default_org IS NULL THEN
+            INSERT INTO organizations (name, slug) VALUES ('Default Studio', 'default')
+            RETURNING id INTO default_org;
+        END IF;
+        UPDATE users    SET organization_id = default_org WHERE organization_id IS NULL;
+        UPDATE projects SET organization_id = default_org WHERE organization_id IS NULL;
+        UPDATE organizations
+           SET owner_id = (
+                SELECT id FROM users
+                 WHERE organization_id = default_org AND app_role = 'pipeline'
+                 ORDER BY created_at LIMIT 1)
+         WHERE id = default_org AND owner_id IS NULL;
+    END IF;
+END $$;
+
+-- Project names/codes are unique per organization, not globally.
+ALTER TABLE projects DROP CONSTRAINT IF EXISTS projects_name_key;
+ALTER TABLE projects DROP CONSTRAINT IF EXISTS projects_code_key;
+CREATE UNIQUE INDEX IF NOT EXISTS projects_org_name_key ON projects(organization_id, name);
+CREATE UNIQUE INDEX IF NOT EXISTS projects_org_code_key ON projects(organization_id, code);

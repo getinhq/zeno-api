@@ -12,6 +12,7 @@ from fastapi import APIRouter, Body, Depends, HTTPException, Path, Query
 from app.auth.deps import optional_current_user, require_role
 from app.db import acquire
 from app.events import log as events_log
+from app.tenancy import current_org_id, ensure_all_in_scope, ensure_in_scope
 from app.notifications import service as notifications_service
 
 router = APIRouter(prefix="/api/v1", tags=["tasks"])
@@ -101,6 +102,24 @@ def _resolve_project_expr(alias: str = "t") -> str:
     return f"COALESCE({alias}.project_id, e_pf.project_id, a_pf.project_id)"
 
 
+def _org_condition(param_index: int) -> str:
+    """Restrict tasks (joined via ``_project_from_task_filter_clause``) to one organization."""
+    return (
+        "EXISTS (SELECT 1 FROM projects p_org "
+        f"WHERE p_org.id = {_resolve_project_expr()} AND p_org.organization_id = ${param_index})"
+    )
+
+
+async def _ensure_task_refs_in_scope(conn, body: dict) -> None:
+    """Every entity/user referenced by a task create/update must belong to the caller's org."""
+    await ensure_in_scope(conn, "project", body.get("project_id"))
+    await ensure_in_scope(conn, "shot", body.get("shot_id"))
+    await ensure_in_scope(conn, "asset", body.get("asset_id"))
+    users = list(body.get("assignees") or []) + list(body.get("collaborators") or [])
+    users += [body.get("assignee_id"), body.get("reviewer_id")]
+    await ensure_all_in_scope(conn, "user", users)
+
+
 async def _load_assignees(conn, task_ids: list[UUID]) -> dict[str, list[str]]:
     if not task_ids:
         return {}
@@ -176,10 +195,14 @@ async def list_tasks(
     conditions: list[str] = []
     params: list[Any] = []
 
-    if project_id:
+    if project_id or current_org_id():
         joins.append(_project_from_task_filter_clause())
+    if project_id:
         conditions.append(f"{_resolve_project_expr()} = ${len(params) + 1}")
         params.append(project_id)
+    if current_org_id():
+        conditions.append(_org_condition(len(params) + 1))
+        params.append(current_org_id())
     if shot_id:
         conditions.append(f"t.shot_id = ${len(params) + 1}")
         params.append(shot_id)
@@ -276,10 +299,14 @@ async def list_my_tasks(
         ")"
     ]
     joins: list[str] = []
-    if project_id:
+    if project_id or current_org_id():
         joins.append(_project_from_task_filter_clause())
+    if project_id:
         conditions.append(f"{_resolve_project_expr()} = ${len(params) + 1}")
         params.append(project_id)
+    if current_org_id():
+        conditions.append(_org_condition(len(params) + 1))
+        params.append(current_org_id())
 
     query = (
         "SELECT t.id, t.project_id, t.shot_id, t.asset_id, t.type, t.title, t.description, "
@@ -346,6 +373,7 @@ async def task_stats(
     """
 
     async with acquire() as conn:
+        await ensure_in_scope(conn, "project", project_id)
         row = await conn.fetchrow(query, *params)
 
     total = int(row["total"] or 0)
@@ -372,6 +400,7 @@ async def task_stats(
 async def get_task(task_id: UUID = Path(...)) -> dict:
     """Get one task by id."""
     async with acquire() as conn:
+        await ensure_in_scope(conn, "task", task_id)
         row = await conn.fetchrow(
             """
             SELECT id, project_id, shot_id, asset_id, type, title, description,
@@ -393,6 +422,7 @@ async def get_task(task_id: UUID = Path(...)) -> dict:
 async def list_task_versions(task_id: UUID = Path(...)) -> list[dict]:
     """List versions linked to a task, newest first."""
     async with acquire() as conn:
+        await ensure_in_scope(conn, "task", task_id)
         rows = await conn.fetch(
             """
             SELECT v.id, v.asset_id, v.representation, v.pipeline_stage, v.version_number,
@@ -454,6 +484,7 @@ async def create_task(
     assignee_id = body.get("assignee_id") or (assignees[0] if assignees else None)
 
     async with acquire() as conn:
+        await _ensure_task_refs_in_scope(conn, body)
         async with conn.transaction():
             try:
                 row = await conn.fetchrow(
@@ -569,6 +600,8 @@ async def update_task(
         raise HTTPException(status_code=400, detail="No updatable fields provided")
 
     async with acquire() as conn:
+        await ensure_in_scope(conn, "task", task_id)
+        await _ensure_task_refs_in_scope(conn, body)
         async with conn.transaction():
             if fields:
                 params.append(task_id)

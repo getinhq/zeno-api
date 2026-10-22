@@ -9,6 +9,7 @@ import asyncpg
 from fastapi import APIRouter, Body, HTTPException, Path, Query
 
 from app.db import acquire
+from app.tenancy import ensure_in_scope
 
 router = APIRouter(prefix="/api/v1", tags=["shots"])
 ALLOWED_STAGES = ("Animatics", "Layout", "Animation", "Lighting", "Comp")
@@ -61,6 +62,7 @@ async def list_shots_for_sequence(
     query += " ORDER BY shot_code"
 
     async with acquire() as conn:
+        await ensure_in_scope(conn, "sequence", sequence_id)
         rows = await conn.fetch(query, *params)
     return [
         {
@@ -122,6 +124,7 @@ async def list_shots_for_project(
     params.extend([limit, offset])
 
     async with acquire() as conn:
+        await ensure_in_scope(conn, "project", project_id)
         rows = await conn.fetch(query, *params)
     return [
         {
@@ -147,6 +150,7 @@ async def list_shots_for_project(
 async def get_shot(shot_id: UUID = Path(...)) -> dict:
     """Get one shot by id."""
     async with acquire() as conn:
+        await ensure_in_scope(conn, "shot", shot_id)
         row = await conn.fetchrow(
             """
             SELECT id, sequence_id, shot_code, stage, frame_start, frame_end,
@@ -192,6 +196,7 @@ async def create_shot(sequence_id: UUID, body: dict = Body(...)) -> dict:
         raise HTTPException(status_code=400, detail=f"stage must be one of: {', '.join(ALLOWED_STAGES)}")
 
     async with acquire() as conn:
+        await ensure_in_scope(conn, "sequence", sequence_id)
         try:
             row = await conn.fetchrow(
                 """
@@ -270,6 +275,7 @@ async def update_shot(shot_id: UUID, body: dict = Body(...)) -> dict:
     )
 
     async with acquire() as conn:
+        await ensure_in_scope(conn, "shot", shot_id)
         row = await conn.fetchrow(query, *params)
 
     if not row:

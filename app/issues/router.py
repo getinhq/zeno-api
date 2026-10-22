@@ -28,6 +28,7 @@ from fastapi.responses import StreamingResponse
 from app.auth.deps import CurrentUser, require_current_user
 from app.cas.factory import get_cas_backend, is_cas_configured
 from app.db import acquire
+from app.tenancy import current_org_id, ensure_all_in_scope, ensure_in_scope
 from app.events.log import emit as emit_event
 from app.notifications.service import emit as emit_notification
 
@@ -180,6 +181,7 @@ async def list_issues(
 
     query = _ISSUE_LIST_SELECT + " WHERE " + " AND ".join(conds) + " ORDER BY i.created_at DESC"
     async with acquire() as conn:
+        await ensure_in_scope(conn, "project", project_id)
         rows = await conn.fetch(query, *params)
     return [_serialize(r) for r in rows]
 
@@ -189,6 +191,7 @@ async def get_issue(
     issue_id: UUID = Path(...), _user: CurrentUser = Depends(require_current_user)
 ) -> dict:
     async with acquire() as conn:
+        await ensure_in_scope(conn, "issue", issue_id)
         row = await conn.fetchrow(
             _ISSUE_LIST_SELECT + " WHERE i.id = $1",
             issue_id,
@@ -252,7 +255,10 @@ async def create_issue(
     if not project_id and project_code:
         async with acquire() as conn:
             pid = await conn.fetchval(
-                "SELECT id FROM projects WHERE code = $1", project_code
+                "SELECT id FROM projects WHERE code = $1"
+                " AND ($2::uuid IS NULL OR organization_id = $2)",
+                project_code,
+                current_org_id(),
             )
         if pid:
             project_id = str(pid)
@@ -314,6 +320,10 @@ async def create_issue(
             shot_id = str(sid)
 
     async with acquire() as conn:
+        await ensure_in_scope(conn, "project", project_id)
+        await ensure_in_scope(conn, "asset", asset_id)
+        await ensure_in_scope(conn, "shot", shot_id)
+        await ensure_all_in_scope(conn, "user", [assignee_id, body.get("reporter_id")])
         try:
             inserted = await conn.fetchrow(
                 """
@@ -398,6 +408,10 @@ async def update_issue(
         + " RETURNING id"
     )
     async with acquire() as conn:
+        await ensure_in_scope(conn, "issue", issue_id)
+        await ensure_in_scope(conn, "asset", body.get("asset_id"))
+        await ensure_in_scope(conn, "shot", body.get("shot_id"))
+        await ensure_in_scope(conn, "user", body.get("assignee_id"))
         updated = await conn.fetchrow(update_sql, *params)
         if not updated:
             raise HTTPException(status_code=404, detail="Issue not found")
@@ -435,6 +449,7 @@ async def attach_media(
     size_bytes = body.get("size_bytes")
 
     async with acquire() as conn:
+        await ensure_in_scope(conn, "issue", issue_id)
         try:
             row = await conn.fetchrow(
                 """
@@ -493,6 +508,7 @@ async def upload_attachment(
         raise HTTPException(status_code=503, detail=str(exc)) from exc
 
     async with acquire() as conn:
+        await ensure_in_scope(conn, "issue", issue_id)
         exists = await conn.fetchval("SELECT 1 FROM issues WHERE id = $1", issue_id)
     if not exists:
         raise HTTPException(status_code=404, detail="Issue not found")
@@ -553,6 +569,7 @@ async def download_attachment(
 ):
     """Stream an attachment back to the client with a proper filename/mime."""
     async with acquire() as conn:
+        await ensure_in_scope(conn, "issue", issue_id)
         row = await conn.fetchrow(
             """
             SELECT id, issue_id, content_id, filename, mime_type, size_bytes

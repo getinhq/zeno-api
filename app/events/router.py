@@ -16,6 +16,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 
 from app.auth.deps import CurrentUser, require_current_user
 from app.db import acquire
+from app.tenancy import ensure_in_scope
 
 router = APIRouter(prefix="/api/v1/events", tags=["events"])
 
@@ -45,6 +46,7 @@ async def list_events(
 
     if role in ("pipeline", "supervisor", "production"):
         async with acquire() as conn:
+            await ensure_in_scope(conn, "project", project_id)
             rows = await conn.fetch(
                 """
                 SELECT e.id, e.project_id, e.actor_id, e.kind, e.payload, e.created_at,
@@ -66,6 +68,7 @@ async def list_events(
         # tank the whole query. Matching against the text representation of the
         # user's task/issue ids sidesteps that and keeps the feed resilient.
         async with acquire() as conn:
+            await ensure_in_scope(conn, "project", project_id)
             rows = await conn.fetch(
                 """
                 WITH my_tasks AS (

@@ -92,12 +92,14 @@ def test_register_version_cas_missing(monkeypatch, client_with_db_and_cas):
 def test_register_version_db_unavailable(monkeypatch, client_with_db_and_cas):
     client = client_with_db_and_cas
 
+    from app.versions import router as versions_router
     from app.versions import service as versions_service
 
     async def failing_register_version(data):
         raise versions_service.ServiceUnavailable("DB down")
 
-    monkeypatch.setattr(versions_service, "register_version", failing_register_version)
+    # The router imports register_version by name, so patch the reference it calls.
+    monkeypatch.setattr(versions_router, "register_version", failing_register_version)
 
     body = {
         "project": "P1",

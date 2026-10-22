@@ -159,7 +159,7 @@ def get_effective_settings(env: str, project_id: Optional[str]) -> Dict[str, Any
 
 def upsert_global_settings(env: str, doc: Dict[str, Any]) -> Dict[str, Any]:
     """Insert or replace global settings for an environment. Invalidates cache."""
-    if env not in ("production", "staging", "development"):
+    if env.split("@", 1)[0] not in ("production", "staging", "development"):
         raise ValueError("env must be production, staging, or development")
     _cache_global.pop(env, None)
     db = _get_db()
