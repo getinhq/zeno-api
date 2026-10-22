@@ -6,58 +6,13 @@ Run against a throwaway database, never the dev one:
 """
 from __future__ import annotations
 
-import os
 from uuid import uuid4
 
-import httpx
 import pytest
 
-import app.config as app_config
-from app.db import close_pool
+from tests.conftest import TEST_DB, make_project as _make_project, signup as _signup
 
-TEST_DB = os.environ.get("ZENO_TEST_DATABASE_URL", "").strip()
 pytestmark = pytest.mark.skipif(not TEST_DB, reason="ZENO_TEST_DATABASE_URL not set")
-
-
-@pytest.fixture
-async def client(monkeypatch):
-    monkeypatch.setattr(app_config, "DATABASE_URL", TEST_DB)
-    monkeypatch.setattr(app_config, "ENABLE_AUTH", True)
-    monkeypatch.setattr(app_config, "ALLOW_SIGNUP", True)
-    from main import app
-
-    transport = httpx.ASGITransport(app=app)
-    async with httpx.AsyncClient(transport=transport, base_url="http://test") as c:
-        yield c
-    # The pool is bound to this test's event loop.
-    await close_pool()
-
-
-async def _signup(client, studio: str) -> dict:
-    tag = uuid4().hex[:8]
-    r = await client.post(
-        "/api/v1/auth/signup",
-        json={
-            "studio_name": f"{studio} {tag}",
-            "name": f"{studio} Owner",
-            "email": f"{studio.lower()}-{tag}@example.com",
-            "password": "correct-horse-battery",
-        },
-    )
-    assert r.status_code == 201, r.text
-    data = r.json()
-    data["headers"] = {"Authorization": f"Bearer {data['access_token']}"}
-    return data
-
-
-async def _make_project(client, owner, code="SHORT01") -> dict:
-    r = await client.post(
-        "/api/v1/projects",
-        json={"name": f"Film {uuid4().hex[:6]}", "code": code},
-        headers=owner["headers"],
-    )
-    assert r.status_code in (200, 201), r.text
-    return r.json()
 
 
 async def test_signup_returns_org_admin(client):

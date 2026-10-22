@@ -577,3 +577,24 @@ ALTER TABLE projects DROP CONSTRAINT IF EXISTS projects_name_key;
 ALTER TABLE projects DROP CONSTRAINT IF EXISTS projects_code_key;
 CREATE UNIQUE INDEX IF NOT EXISTS projects_org_name_key ON projects(organization_id, name);
 CREATE UNIQUE INDEX IF NOT EXISTS projects_org_code_key ON projects(organization_id, code);
+
+-- 19. Invites. The link carries a random token; only its SHA-256 is stored.
+CREATE TABLE IF NOT EXISTS invites (
+    id               UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    organization_id  UUID NOT NULL REFERENCES organizations(id) ON DELETE CASCADE,
+    email            TEXT,
+    app_role         TEXT NOT NULL DEFAULT 'artist'
+                     CHECK (app_role IN ('artist','pipeline','supervisor','production')),
+    department       TEXT,
+    project_id       UUID REFERENCES projects(id) ON DELETE SET NULL,
+    message          TEXT,
+    token_hash       TEXT NOT NULL UNIQUE,
+    invited_by       UUID REFERENCES users(id) ON DELETE SET NULL,
+    expires_at       TIMESTAMPTZ NOT NULL,
+    accepted_at      TIMESTAMPTZ,
+    accepted_user_id UUID REFERENCES users(id) ON DELETE SET NULL,
+    revoked_at       TIMESTAMPTZ,
+    email_sent_at    TIMESTAMPTZ,
+    created_at       TIMESTAMPTZ DEFAULT NOW()
+);
+CREATE INDEX IF NOT EXISTS idx_invites_org ON invites(organization_id, created_at DESC);

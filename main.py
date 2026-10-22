@@ -9,8 +9,10 @@ from app.cas.router import router as cas_router
 from app.db import close_pool, get_pool
 from app.events.router import router as events_router
 from app.health import run_health_checks
+from app.invites.router import router as invites_router
 from app.issues.router import router as issues_router
 from app.notifications.router import router as notifications_router
+from app.organizations.router import router as organization_router
 from app.redis_conn import close_redis
 from app.users.router import router as users_router
 from app.workflow.locks_router import router as locks_router
@@ -87,6 +89,8 @@ app.include_router(users_router)
 app.include_router(issues_router)
 app.include_router(notifications_router)
 app.include_router(events_router)
+app.include_router(organization_router)
+app.include_router(invites_router)
 
 
 @app.get("/")
