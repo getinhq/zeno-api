@@ -649,3 +649,9 @@ CREATE TRIGGER milestones_timestamp
     BEFORE UPDATE ON milestones
     FOR EACH ROW EXECUTE PROCEDURE update_timestamp();
 CREATE INDEX IF NOT EXISTS idx_milestones_project ON milestones(project_id, due_date);
+
+-- 23. Shot casting: instance_name must be non-null for the (shot, asset, instance) uniqueness
+--     to hold (NULLs never conflict in Postgres).
+UPDATE shot_assets SET instance_name = '' WHERE instance_name IS NULL;
+ALTER TABLE shot_assets ALTER COLUMN instance_name SET DEFAULT '';
+ALTER TABLE shot_assets ALTER COLUMN instance_name SET NOT NULL;

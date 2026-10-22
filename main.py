@@ -6,6 +6,7 @@ from fastapi import Depends, FastAPI
 import app.config as app_config
 from app.auth.router import router as auth_router
 from app.cas.router import router as cas_router
+from app.casting.router import router as casting_router
 from app.db import close_pool, get_pool
 from app.events.router import router as events_router
 from app.health import run_health_checks
@@ -95,6 +96,7 @@ app.include_router(events_router)
 app.include_router(organization_router)
 app.include_router(invites_router)
 app.include_router(task_templates_router)
+app.include_router(casting_router)
 
 
 @app.get("/")
