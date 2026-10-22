@@ -19,6 +19,7 @@ from app.workflow.locks_router import router as locks_router
 from app.launch.router import router as launch_router
 from app.workflow.presence_router import router as presence_router
 from app.versions.router import router as versions_router
+from app.project_templates.router import router as project_templates_router
 from app.projects.router import router as projects_router
 from app.episodes.router import router as episodes_router
 from app.sequences.router import router as sequences_router
@@ -74,6 +75,7 @@ app = FastAPI(
 
 app.include_router(auth_router)
 app.include_router(cas_router)
+app.include_router(project_templates_router)
 app.include_router(projects_router)
 app.include_router(episodes_router)
 app.include_router(sequences_router)

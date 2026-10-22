@@ -631,3 +631,21 @@ CREATE INDEX IF NOT EXISTS idx_task_templates_org ON task_templates(organization
 CREATE UNIQUE INDEX IF NOT EXISTS task_templates_one_default
     ON task_templates (organization_id, entity_kind, COALESCE(asset_type, ''))
     WHERE is_default;
+
+-- 22. Project milestones (created by project templates, edited on the schedule).
+CREATE TABLE IF NOT EXISTS milestones (
+    id           UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    project_id   UUID NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+    name         TEXT NOT NULL,
+    due_date     DATE NOT NULL,
+    kind         TEXT NOT NULL DEFAULT 'milestone' CHECK (kind IN ('milestone','review','delivery')),
+    description  TEXT,
+    done_at      TIMESTAMPTZ,
+    created_at   TIMESTAMPTZ DEFAULT NOW(),
+    updated_at   TIMESTAMPTZ DEFAULT NOW()
+);
+DROP TRIGGER IF EXISTS milestones_timestamp ON milestones;
+CREATE TRIGGER milestones_timestamp
+    BEFORE UPDATE ON milestones
+    FOR EACH ROW EXECUTE PROCEDURE update_timestamp();
+CREATE INDEX IF NOT EXISTS idx_milestones_project ON milestones(project_id, due_date);
