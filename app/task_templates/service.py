@@ -174,6 +174,17 @@ async def apply_template(
         )
         existing[step["type"]] = task_id
         created[i] = task_id
+    for i, step in enumerate(steps):
+        for d in step.get("depends_on") or []:
+            if i in created and d in created and created[i] != created[d]:
+                await conn.execute(
+                    """
+                    INSERT INTO task_dependencies (task_id, depends_on_task_id, source)
+                    VALUES ($1, $2, 'template') ON CONFLICT DO NOTHING
+                    """,
+                    created[i],
+                    created[d],
+                )
     return created
 
 

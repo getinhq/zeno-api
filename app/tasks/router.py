@@ -164,6 +164,7 @@ def _serialize_task(row, assignees: list[str], collaborators: list[str]) -> dict
         "estimated_hours": float(row["estimated_hours"]) if row["estimated_hours"] is not None else None,
         "actual_hours": float(row["actual_hours"]) if row["actual_hours"] is not None else None,
         "due_date": row["due_date"].isoformat() if row["due_date"] else None,
+        "start_date": row["start_date"].isoformat() if row.get("start_date") else None,
         "metadata": _json_metadata(row["metadata"]),
         "created_at": row["created_at"].isoformat() if row["created_at"] else None,
         "updated_at": row["updated_at"].isoformat() if row["updated_at"] else None,
@@ -188,7 +189,7 @@ async def list_tasks(
     base = """
         SELECT t.id, t.project_id, t.shot_id, t.asset_id, t.type, t.title, t.description,
                t.assignee_id, t.reviewer_id, t.status, t.estimated_hours, t.actual_hours,
-               t.due_date, t.metadata, t.created_at, t.updated_at
+               t.due_date, t.start_date, t.metadata, t.created_at, t.updated_at
         FROM tasks t
     """
     joins: list[str] = []
@@ -311,7 +312,7 @@ async def list_my_tasks(
     query = (
         "SELECT t.id, t.project_id, t.shot_id, t.asset_id, t.type, t.title, t.description, "
         "t.assignee_id, t.reviewer_id, t.status, t.estimated_hours, t.actual_hours, "
-        "t.due_date, t.metadata, t.created_at, t.updated_at FROM tasks t "
+        "t.due_date, t.start_date, t.metadata, t.created_at, t.updated_at FROM tasks t "
         + " ".join(joins)
         + " WHERE "
         + " AND ".join(conditions)
@@ -405,7 +406,7 @@ async def get_task(task_id: UUID = Path(...)) -> dict:
             """
             SELECT id, project_id, shot_id, asset_id, type, title, description,
                    assignee_id, reviewer_id, status, estimated_hours, actual_hours,
-                   due_date, metadata, created_at, updated_at
+                   due_date, start_date, metadata, created_at, updated_at
             FROM tasks
             WHERE id = $1
             """,
@@ -496,7 +497,7 @@ async def create_task(
                     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11::timestamptz, $12::jsonb)
                     RETURNING id, project_id, shot_id, asset_id, type, title, description,
                               assignee_id, reviewer_id, status, estimated_hours, actual_hours,
-                              due_date, metadata, created_at, updated_at
+                              due_date, start_date, metadata, created_at, updated_at
                     """,
                     project_id,
                     shot_id,
@@ -613,7 +614,7 @@ async def update_task(
                     + """
                     RETURNING id, project_id, shot_id, asset_id, type, title, description,
                               assignee_id, reviewer_id, status, estimated_hours, actual_hours,
-                              due_date, metadata, created_at, updated_at
+                              due_date, start_date, metadata, created_at, updated_at
                     """
                 )
                 try:
@@ -627,7 +628,7 @@ async def update_task(
                     """
                     SELECT id, project_id, shot_id, asset_id, type, title, description,
                            assignee_id, reviewer_id, status, estimated_hours, actual_hours,
-                           due_date, metadata, created_at, updated_at
+                           due_date, start_date, metadata, created_at, updated_at
                     FROM tasks WHERE id = $1
                     """,
                     task_id,

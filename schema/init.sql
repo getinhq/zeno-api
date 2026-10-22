@@ -655,3 +655,15 @@ CREATE INDEX IF NOT EXISTS idx_milestones_project ON milestones(project_id, due_
 UPDATE shot_assets SET instance_name = '' WHERE instance_name IS NULL;
 ALTER TABLE shot_assets ALTER COLUMN instance_name SET DEFAULT '';
 ALTER TABLE shot_assets ALTER COLUMN instance_name SET NOT NULL;
+
+-- 24. Scheduling: task start dates and finish-to-start dependencies.
+ALTER TABLE tasks ADD COLUMN IF NOT EXISTS start_date DATE;
+CREATE TABLE IF NOT EXISTS task_dependencies (
+    task_id            UUID NOT NULL REFERENCES tasks(id) ON DELETE CASCADE,
+    depends_on_task_id UUID NOT NULL REFERENCES tasks(id) ON DELETE CASCADE,
+    source             TEXT NOT NULL DEFAULT 'manual' CHECK (source IN ('manual','template','casting')),
+    created_at         TIMESTAMPTZ DEFAULT NOW(),
+    PRIMARY KEY (task_id, depends_on_task_id),
+    CHECK (task_id <> depends_on_task_id)
+);
+CREATE INDEX IF NOT EXISTS idx_task_dependencies_on ON task_dependencies(depends_on_task_id);

@@ -29,6 +29,7 @@ from app.shots.router import router as shots_router
 from app.task_templates.router import router as task_templates_router
 from app.tasks.router import router as tasks_router
 from app.resolver.router import router as resolver_router
+from app.schedule.router import router as schedule_router
 from app.settings.router import router as settings_router
 from app.manifests.store import ensure_manifest_indexes
 from app.settings.store import ensure_settings_indexes
@@ -97,6 +98,7 @@ app.include_router(organization_router)
 app.include_router(invites_router)
 app.include_router(task_templates_router)
 app.include_router(casting_router)
+app.include_router(schedule_router)
 
 
 @app.get("/")
