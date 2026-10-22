@@ -27,6 +27,10 @@ class LaunchContextV1(BaseModel):
     )
     resolved_path: Optional[str] = None
     api_base_url: Optional[str] = None
+    access_token: Optional[str] = Field(
+        None,
+        description="Short-lived personal access token for the launching user (set by the API, not the caller)",
+    )
 
 
 class MintLaunchTokenBody(BaseModel):

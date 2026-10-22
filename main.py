@@ -38,17 +38,26 @@ from app.tenancy import bind_request_identity
 
 def _validate_runtime_config() -> None:
     """
-    Fail fast in production-like environments when CAS is not MinIO/S3-backed
-    or when the JWT secret is missing.
+    Fail fast in production-like environments when the deployment would be unsafe:
+    a multi-tenant server must authenticate every request and sign tokens with a real
+    secret, and CAS needs somewhere durable to live (S3/MinIO or a local/NAS directory).
     """
     env = app_config.APP_ENV
     if env in ("production", "staging"):
-        if app_config.CAS_STORAGE_BACKEND != "s3":
-            raise RuntimeError("CAS_STORAGE_BACKEND must be 's3' in production/staging")
-        if not (app_config.S3_ENDPOINT_URL and app_config.S3_ACCESS_KEY and app_config.S3_SECRET_KEY):
-            raise RuntimeError("S3_ENDPOINT_URL, S3_ACCESS_KEY, and S3_SECRET_KEY are required in production/staging")
-        if app_config.ENABLE_AUTH and not app_config.ZENO_JWT_SECRET:
-            raise RuntimeError("ZENO_JWT_SECRET must be set when ENABLE_AUTH=true in production/staging")
+        if not app_config.ENABLE_AUTH:
+            raise RuntimeError("ENABLE_AUTH must be true in production/staging (studios share this server)")
+        if not app_config.ZENO_JWT_SECRET or len(app_config.ZENO_JWT_SECRET) < 32:
+            raise RuntimeError("ZENO_JWT_SECRET must be set (32+ characters) in production/staging")
+        backend = app_config.CAS_STORAGE_BACKEND
+        s3_ready = bool(app_config.S3_ENDPOINT_URL and app_config.S3_ACCESS_KEY and app_config.S3_SECRET_KEY)
+        if backend == "s3" and not s3_ready:
+            raise RuntimeError("CAS_STORAGE_BACKEND=s3 needs S3_ENDPOINT_URL, S3_ACCESS_KEY and S3_SECRET_KEY")
+        if backend == "nas" and not app_config.CAS_ROOT:
+            raise RuntimeError("CAS_STORAGE_BACKEND=nas needs ZENO_CAS_ROOT")
+        if backend == "auto" and not (s3_ready or app_config.CAS_ROOT):
+            raise RuntimeError("Configure CAS storage: S3_* for S3/MinIO, or ZENO_CAS_ROOT for local disk")
+        if app_config.PUBLIC_APP_URL.startswith("http://localhost"):
+            raise RuntimeError("ZENO_PUBLIC_APP_URL must be the public dashboard URL (used in invite links)")
 
 
 @asynccontextmanager

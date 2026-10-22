@@ -667,3 +667,17 @@ CREATE TABLE IF NOT EXISTS task_dependencies (
     CHECK (task_id <> depends_on_task_id)
 );
 CREATE INDEX IF NOT EXISTS idx_task_dependencies_on ON task_dependencies(depends_on_task_id);
+
+-- 25. Personal access tokens (DCC plugins, scripts). Only the SHA-256 is stored.
+CREATE TABLE IF NOT EXISTS api_tokens (
+    id           UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    user_id      UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    name         TEXT NOT NULL,
+    token_hash   TEXT NOT NULL UNIQUE,
+    prefix       TEXT NOT NULL,
+    expires_at   TIMESTAMPTZ,
+    last_used_at TIMESTAMPTZ,
+    revoked_at   TIMESTAMPTZ,
+    created_at   TIMESTAMPTZ DEFAULT NOW()
+);
+CREATE INDEX IF NOT EXISTS idx_api_tokens_user ON api_tokens(user_id);

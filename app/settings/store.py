@@ -81,6 +81,18 @@ def _deep_merge(base: Dict[str, Any], overrides: Dict[str, Any]) -> Dict[str, An
     return result
 
 
+def _env_cas_defaults() -> Dict[str, Any]:
+    """
+    CAS choice when nothing has been saved in settings: mirror the server's environment
+    (CAS_STORAGE_BACKEND / S3_* / ZENO_CAS_ROOT) so an unsaved default never overrides it.
+    """
+    import app.config as cfg
+
+    s3_ready = bool(cfg.S3_ENDPOINT_URL and cfg.S3_ACCESS_KEY and cfg.S3_SECRET_KEY)
+    use_minio = cfg.CAS_STORAGE_BACKEND == "s3" or (cfg.CAS_STORAGE_BACKEND == "auto" and s3_ready)
+    return {"use_minio": use_minio, "local_cas_root": cfg.CAS_ROOT or "/tmp/zeno_cas"}
+
+
 def get_global_settings(env: str, ttl_seconds: int = DEFAULT_TTL_SECONDS) -> Dict[str, Any]:
     """Return global settings for an environment.
 
@@ -103,10 +115,7 @@ def get_global_settings(env: str, ttl_seconds: int = DEFAULT_TTL_SECONDS) -> Dic
             "frame": {"rate": 24.0, "handle_in": 0, "handle_out": 0},
             "qc_checks": [],
             "extra": {
-                "cas": {
-                    "use_minio": True,
-                    "local_cas_root": "/tmp/zeno_cas",
-                },
+                "cas": _env_cas_defaults(),
                 "dcc_applications": [],
             },
         }
@@ -172,10 +181,7 @@ def upsert_global_settings(env: str, doc: Dict[str, Any]) -> Dict[str, Any]:
         "extra": doc.get(
             "extra",
             {
-                "cas": {
-                    "use_minio": True,
-                    "local_cas_root": "/tmp/zeno_cas",
-                }
+                "cas": _env_cas_defaults()
             },
         ),
         "updated_at": now,

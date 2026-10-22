@@ -8,6 +8,7 @@ refusing all logouts — the token will still expire naturally.
 from __future__ import annotations
 
 import logging
+from datetime import timedelta
 from typing import Any, Optional
 from uuid import UUID
 
@@ -16,6 +17,7 @@ from fastapi import APIRouter, Body, Depends, HTTPException, status
 
 import app.config as app_config
 from app.auth import service as auth_service
+from app.auth import tokens
 from app.auth.deps import CurrentUser, get_current_user
 from app.db import acquire
 from app.organizations.service import create_organization_with_owner, organization_payload
@@ -194,3 +196,53 @@ async def me(user: CurrentUser = Depends(get_current_user)) -> dict:
     if not row or not row["is_active"]:
         raise HTTPException(status_code=401, detail="User is inactive")
     return _user_payload(row)
+
+
+# --- Personal access tokens -----------------------------------------------------------
+
+
+@router.get("/tokens")
+async def list_tokens(user: CurrentUser = Depends(get_current_user)) -> list[dict]:
+    async with acquire() as conn:
+        rows = await conn.fetch(
+            "SELECT id, name, prefix, expires_at, last_used_at, revoked_at, created_at FROM api_tokens"
+            " WHERE user_id = $1 AND revoked_at IS NULL AND (expires_at IS NULL OR expires_at > NOW())"
+            " AND name <> 'Open in DCC' ORDER BY created_at DESC",
+            user.id,
+        )
+    return [tokens.serialize(r) for r in rows]
+
+
+@router.post("/tokens", status_code=201)
+async def create_token(body: dict = Body(...), user: CurrentUser = Depends(get_current_user)) -> dict:
+    """Create a token for a DCC add-on or script. The token is returned only once."""
+    name = (body.get("name") or "").strip()[:80]
+    if not name:
+        raise HTTPException(status_code=400, detail="name is required")
+    days = body.get("expires_in_days")
+    ttl = None
+    if days not in (None, "", 0):
+        try:
+            ttl = timedelta(days=int(days))
+        except (TypeError, ValueError):
+            raise HTTPException(status_code=400, detail="expires_in_days must be a number") from None
+        if not 1 <= ttl.days <= 3650:
+            raise HTTPException(status_code=400, detail="expires_in_days must be 1-3650")
+    async with acquire() as conn:
+        token, row = await tokens.create(conn, user.id, name, ttl)
+    return {**tokens.serialize(row), "token": token}
+
+
+@router.delete("/tokens/{token_id}")
+async def revoke_token(token_id: UUID, user: CurrentUser = Depends(get_current_user)) -> dict:
+    async with acquire() as conn:
+        done = await conn.fetchval(
+            "UPDATE api_tokens SET revoked_at = NOW() WHERE id = $1 AND user_id = $2 AND revoked_at IS NULL"
+            " RETURNING id",
+            token_id,
+            user.id,
+        )
+    if not done:
+        raise HTTPException(status_code=404, detail="Token not found")
+    return {"revoked": str(done)}
+

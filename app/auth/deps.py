@@ -62,8 +62,22 @@ def _decode_access(token: str) -> dict:
     return payload
 
 
+async def _user_from_pat(token: str) -> CurrentUser:
+    from app.auth import tokens as pat
+    from app.db import acquire
+
+    async with acquire() as conn:
+        row = await pat.lookup(conn, token)
+    if row is None:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid or expired API token")
+    return CurrentUser(id=row["id"], username=row["username"] or "", app_role=row["app_role"], jti="")
+
+
 async def get_current_user(authorization: Optional[str] = Header(default=None)) -> CurrentUser:
     token = _parse_bearer(authorization)
+    if token.startswith("zeno_pat_"):
+        # Personal access token (DCC plugins, scripts) instead of a session JWT.
+        return await _user_from_pat(token)
     payload = _decode_access(token)
     try:
         uid = UUID(str(payload.get("sub")))

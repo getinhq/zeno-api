@@ -9,6 +9,7 @@ from fastapi import APIRouter, Header, HTTPException, Query, Request, Response
 from pydantic import BaseModel
 
 import app.config as app_config
+from app.auth import tokens as pat
 from app.db import acquire
 from app.tenancy import current_org_id, current_user, ensure_in_scope
 from app.launch.dcc_settings import resolve_dcc_executable_path
@@ -80,6 +81,17 @@ async def mint_launch_token(
     token_id = secrets.token_urlsafe(32)
     ttl = app_config.LAUNCH_TOKEN_TTL_SECONDS
     ctx_dict = body.context.model_dump(mode="json", exclude_none=True)
+    # Never trust a caller-supplied credential in the context.
+    ctx_dict.pop("access_token", None)
+    user = current_user()
+    if user is not None and user.db_id is not None:
+        # The DCC acts as this user for the session (Blender add-on reads it from the context).
+        async with acquire() as conn:
+            await conn.execute(
+                "DELETE FROM api_tokens WHERE name = 'Open in DCC' AND expires_at < NOW() - interval '7 days'"
+            )
+            dcc_token, _ = await pat.create(conn, user.db_id, "Open in DCC", timedelta(hours=24))
+        ctx_dict["access_token"] = dcc_token
     if not ctx_dict.get("dcc_executable_path"):
         resolved = resolve_dcc_executable_path(
             str(ctx_dict.get("dcc", "")),
