@@ -153,7 +153,7 @@ async def _open_share(conn, token: str, password: Optional[str]):
 def _public_item(row) -> dict:
     item = serialize_item(row)
     # Clients see the media and the shot, not internal people or processing detail.
-    for key in ("submitted_by", "decided_by", "source_info", "version_id", "open_notes", "fixed_notes"):
+    for key in ("submitted_by", "decided_by", "source_info", "sequence", "version_id", "open_notes", "fixed_notes"):
         item.pop(key, None)
     return item
 

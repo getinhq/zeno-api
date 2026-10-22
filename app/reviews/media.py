@@ -145,12 +145,15 @@ def _scale_filter(max_w: int = PROXY_MAX_W, max_h: int = PROXY_MAX_H) -> str:
     )
 
 
-async def make_video_proxy(src: Path, dst: Path, fps: Fraction, has_audio: bool) -> None:
+async def make_video_proxy(
+    src: Path | str, dst: Path, fps: Fraction, has_audio: bool, *, input_args: list[str] | None = None
+) -> None:
+    """``input_args`` go before ``-i`` (e.g. ``-framerate``/``-start_number`` for an image sequence)."""
     rate = f"{fps.numerator}/{fps.denominator}"
     gop = str(max(1, round(float(fps) / 2)))
     vf = f"fps={rate},setpts=N/FRAME_RATE/TB,{_scale_filter()},format=yuv420p"
     args = [
-        "ffmpeg", "-nostdin", "-loglevel", "error", "-y", "-i", str(src),
+        "ffmpeg", "-nostdin", "-loglevel", "error", "-y", *(input_args or []), "-i", str(src),
         "-map", "0:v:0", "-vf", vf, "-fps_mode", "cfr", "-r", rate,
         "-c:v", "libx264", "-preset", "veryfast", "-crf", "20", "-g", gop, "-keyint_min", gop,
         "-sc_threshold", "0", "-bf", "0", "-pix_fmt", "yuv420p",
@@ -207,3 +210,11 @@ async def make_filmstrip(proxy: Path, dst: Path, frame_count: int) -> tuple[int,
         "-vf", vf, "-fps_mode", "vfr", "-frames:v", "1", "-q:v", "5", str(dst),
     )
     return tiles, step
+
+
+def sequence_input_args(fps: Fraction, codec: str) -> list[str]:
+    """ffmpeg input options for a numbered image sequence (EXR/HDR converted to sRGB)."""
+    args = ["-framerate", f"{fps.numerator}/{fps.denominator}", "-start_number", "0"]
+    if codec in LINEAR_CODECS:
+        args = ["-apply_trc", "iec61966_2_1", *args]
+    return args

@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import tempfile
 from fractions import Fraction
 from pathlib import Path as _Path
@@ -117,6 +118,11 @@ def serialize_item(row, *, urls: bool = True) -> dict:
         "height": row["height"],
         "has_audio": row["has_audio"],
         "source_info": row["source_info"] if isinstance(row["source_info"], dict) else json.loads(row["source_info"] or "{}"),
+        "sequence": (
+            (row["source_info"] if isinstance(row["source_info"], dict) else json.loads(row["source_info"] or "{}")).get("sequence")
+            if row["kind"] == "sequence"
+            else None
+        ),
         "processing_status": row["processing_status"],
         "processing_error": row["processing_error"],
         "review_status": row["review_status"],
@@ -136,7 +142,10 @@ def serialize_item(row, *, urls: bool = True) -> dict:
             "proxy": sign(row["proxy_content_id"], row["proxy_mime"] or "video/mp4") if ready else None,
             "thumbnail": sign(row["thumb_content_id"], "image/jpeg"),
             "filmstrip": sign(row["filmstrip_content_id"], "image/jpeg"),
-            "original": sign(row["source_content_id"], "application/octet-stream", filename=row["source_filename"]),
+            # A sequence's source is a frame manifest, not something to download or open.
+            "original": None
+            if row["kind"] == "sequence"
+            else sign(row["source_content_id"], "application/octet-stream", filename=row["source_filename"]),
         }
     return out
 
@@ -300,22 +309,53 @@ async def submit_for_review(
     if frame_start is not None and not -100000 <= frame_start <= 10_000_000:
         raise HTTPException(status_code=400, detail="frame_start is out of range")
 
+    task = await _load_task(task_id, version_id)
+    content_id, size = await stream_upload_to_cas(file)
+    return await _create_item(
+        task,
+        user,
+        version_id=version_id,
+        description=description,
+        kind="image" if ext in IMAGE_EXTS else "video",
+        source_content_id=content_id,
+        source_filename=filename,
+        source_size=size,
+        rate=rate,
+        frame_start=frame_start if frame_start is not None else 1,
+    )
+
+
+async def _load_task(task_id: UUID, version_id: Optional[UUID]):
     async with acquire() as conn:
         await ensure_in_scope(conn, "task", task_id)
         task = await conn.fetchrow(
-            """
-            SELECT t.id, t.project_id, t.reviewer_id, t.title, t.type
-            FROM tasks t WHERE t.id = $1
-            """,
+            "SELECT t.id, t.project_id, t.reviewer_id, t.title, t.type FROM tasks t WHERE t.id = $1",
             task_id,
         )
         if not task or not task["project_id"]:
             raise HTTPException(status_code=404, detail="Task not found")
         if version_id:
             await ensure_in_scope(conn, "version", version_id)
+    return task
 
-    content_id, size = await stream_upload_to_cas(file)
 
+async def _create_item(
+    task,
+    user: CurrentUser,
+    *,
+    version_id: Optional[UUID],
+    description: Optional[str],
+    kind: str,
+    source_content_id: str,
+    source_filename: str,
+    source_size: int,
+    rate: Optional[Fraction],
+    frame_start: int,
+    frames: Optional[list] = None,
+    source_info: Optional[dict] = None,
+) -> dict:
+    """Insert the task's next revision, move the task to review, notify, start conversion."""
+    task_id = task["id"]
     async with acquire() as conn:
         async with conn.transaction():
             # Serialize revision numbering per task.
@@ -327,8 +367,9 @@ async def submit_for_review(
                 """
                 INSERT INTO review_items (project_id, task_id, revision, version_id, description,
                     kind, source_content_id, source_filename, source_size, fps_num, fps_den,
-                    frame_start, submitted_by)
-                VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
+                    frame_start, submitted_by, frames, source_info)
+                VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14::jsonb,
+                        COALESCE($15::jsonb, '{}'::jsonb))
                 RETURNING id
                 """,
                 task["project_id"],
@@ -336,14 +377,16 @@ async def submit_for_review(
                 revision,
                 version_id,
                 _clean_body(description, required=False) or None,
-                "image" if ext in IMAGE_EXTS else "video",
-                content_id,
-                filename,
-                size,
+                kind,
+                source_content_id,
+                source_filename,
+                source_size,
                 rate.numerator if rate else None,
                 rate.denominator if rate else None,
-                frame_start if frame_start is not None else 1,
+                frame_start,
                 user.db_id,
+                json.dumps(frames) if frames is not None else None,
+                json.dumps(source_info) if source_info is not None else None,
             )
             await conn.execute(
                 "UPDATE tasks SET status = 'review', updated_at = NOW() WHERE id = $1 AND status <> 'review'",
@@ -370,6 +413,166 @@ async def submit_for_review(
         row = await conn.fetchrow(_ITEM_SELECT + " WHERE ri.id = $1", item_id)
     processing.enqueue(item_id)
     return serialize_item(row)
+
+
+# --- image sequences -------------------------------------------------------------------
+
+MAX_SEQUENCE_FRAMES = 20000
+_FRAME_NUMBER_RE = re.compile(r"(\d+)(?=\.[A-Za-z0-9]+$)")
+
+
+def frame_number(filename: str) -> int:
+    """Frame number from a sequence file name: ``sh010.1012.exr`` / ``frame_1012.png`` -> 1012."""
+    m = None
+    for m in _FRAME_NUMBER_RE.finditer(_Path(filename).name):
+        pass
+    if m is None:
+        raise HTTPException(status_code=400, detail=f"No frame number in file name: {filename}")
+    return int(m.group(1))
+
+
+def sequence_pattern(filename: str) -> str:
+    """``sh010.1012.exr`` -> ``sh010.####.exr`` (for display)."""
+    name = _Path(filename).name
+    return _FRAME_NUMBER_RE.sub(lambda m: "#" * len(m.group(1)), name)
+
+
+async def _create_sequence(
+    task,
+    user: CurrentUser,
+    frames: list[dict],
+    *,
+    rate: Optional[Fraction],
+    description: Optional[str],
+    version_id: Optional[UUID],
+) -> dict:
+    """``frames``: [{frame, content_id, size, filename}] already in CAS (one blob per frame)."""
+    if not frames:
+        raise HTTPException(status_code=400, detail="The sequence has no frames")
+    if len(frames) > MAX_SEQUENCE_FRAMES:
+        raise HTTPException(status_code=400, detail=f"Sequences are limited to {MAX_SEQUENCE_FRAMES} frames")
+    frames = sorted(frames, key=lambda f: f["frame"])
+    numbers = [f["frame"] for f in frames]
+    if len(set(numbers)) != len(numbers):
+        raise HTTPException(status_code=400, detail="Two files have the same frame number")
+    ext = _Path(frames[0]["filename"]).suffix.lower()
+    if ext not in IMAGE_EXTS or any(_Path(f["filename"]).suffix.lower() != ext for f in frames):
+        raise HTTPException(status_code=415, detail="A sequence is one image format (EXR, PNG, TIFF, JPEG, DPX…)")
+
+    # What this revision really adds: frames whose bytes no earlier revision of the task stored.
+    async with acquire() as conn:
+        earlier = await conn.fetch(
+            "SELECT revision, frames FROM review_items WHERE task_id = $1 AND frames IS NOT NULL", task["id"]
+        )
+    known: dict[str, str] = {}
+    for r in sorted(earlier, key=lambda r: r["revision"]):
+        for f in r["frames"] if isinstance(r["frames"], list) else json.loads(r["frames"] or "[]"):
+            known.setdefault(f["content_id"], f"v{r['revision']:03d}")
+    total = sum(int(f["size"]) for f in frames)
+    unique = {f["content_id"]: int(f["size"]) for f in frames}
+    reused = [f for f in frames if f["content_id"] in known]
+    new_bytes = sum(size for cid, size in unique.items() if cid not in known)
+    stats = {
+        "ext": ext,
+        "pattern": sequence_pattern(frames[0]["filename"]),
+        "frames": len(frames),
+        "first": numbers[0],
+        "last": numbers[-1],
+        "total_bytes": total,
+        "unique_frames": len(unique),
+        "reused_frames": len(reused),
+        "reused_bytes": sum(int(f["size"]) for f in reused),
+        "reused_from": sorted({known[f["content_id"]] for f in reused}),
+        "new_bytes": new_bytes,
+        "saved_ratio": round(1 - new_bytes / total, 4) if total else 0.0,
+    }
+    manifest = [{"frame": f["frame"], "content_id": f["content_id"], "size": int(f["size"])} for f in frames]
+    raw = json.dumps({"version": 1, "pattern": stats["pattern"], "frames": manifest}, separators=(",", ":")).encode()
+    manifest_id = blake3(raw).hexdigest()
+    backend = get_cas_backend()
+    if not backend.exists(manifest_id):
+        fd, tmp = tempfile.mkstemp(dir=backend.ensure_tmp(), prefix="manifest_")
+        with os.fdopen(fd, "wb") as f:
+            f.write(raw)
+        backend.put_from_path(manifest_id, _Path(tmp))
+        if os.path.exists(tmp):
+            os.unlink(tmp)
+    return await _create_item(
+        task,
+        user,
+        version_id=version_id,
+        description=description,
+        kind="sequence",
+        source_content_id=manifest_id,
+        source_filename=f"{stats['pattern']} ({len(frames)} frames)",
+        source_size=total,
+        rate=rate,
+        frame_start=numbers[0],
+        frames=manifest,
+        source_info={"sequence": stats},
+    )
+
+
+@router.post("/items/sequence", status_code=201)
+async def submit_sequence(body: dict = Body(...), user: CurrentUser = Depends(require_current_user)) -> dict:
+    """Frames already uploaded to CAS (``PUT /api/v1/cas/blobs/{hash}``, skipping ones that exist).
+
+    Body: ``task_id``, ``frames: [{frame, content_id, size, filename}]``, optional ``fps``,
+    ``description``, ``version_id``. DCC plugins use this so unchanged frames are never re-sent.
+    """
+    try:
+        task_id = UUID(str(body.get("task_id")))
+        version_id = UUID(str(body["version_id"])) if body.get("version_id") else None
+    except ValueError:
+        raise HTTPException(status_code=400, detail="task_id must be a task id") from None
+    raw_frames = body.get("frames")
+    if not isinstance(raw_frames, list):
+        raise HTTPException(status_code=400, detail="frames must be a list")
+    backend = get_cas_backend() if is_cas_configured() else None
+    if backend is None:
+        raise HTTPException(status_code=503, detail="File storage is not configured")
+    frames = []
+    for f in raw_frames:
+        try:
+            item = {
+                "frame": int(f["frame"]),
+                "content_id": str(f["content_id"]).lower(),
+                "size": int(f["size"]),
+                "filename": str(f.get("filename") or ""),
+            }
+        except (KeyError, TypeError, ValueError):
+            raise HTTPException(status_code=400, detail="Each frame needs frame, content_id, size, filename") from None
+        frames.append(item)
+    missing = [f["frame"] for f in frames if not backend.exists(f["content_id"])]
+    if missing:
+        raise HTTPException(status_code=409, detail=f"{len(missing)} frame(s) not uploaded yet, e.g. {missing[:5]}")
+    task = await _load_task(task_id, version_id)
+    return await _create_sequence(
+        task, user, frames, rate=_parse_fps(body.get("fps")), description=body.get("description"), version_id=version_id
+    )
+
+
+@router.post("/items/sequence/upload", status_code=201)
+async def upload_sequence(
+    task_id: UUID = Form(...),
+    files: list[UploadFile] = File(...),
+    fps: Optional[str] = Form(None),
+    description: Optional[str] = Form(None),
+    version_id: Optional[UUID] = Form(None),
+    user: CurrentUser = Depends(require_current_user),
+) -> dict:
+    """Browser upload of a whole sequence (multiple files). Each frame is stored once by hash."""
+    if len(files) > MAX_SEQUENCE_FRAMES:
+        raise HTTPException(status_code=400, detail=f"Sequences are limited to {MAX_SEQUENCE_FRAMES} frames")
+    task = await _load_task(task_id, version_id)
+    rate = _parse_fps(fps)
+    frames = []
+    for f in files:
+        name = (f.filename or "").strip()
+        number = frame_number(name)
+        content_id, size = await stream_upload_to_cas(f)
+        frames.append({"frame": number, "content_id": content_id, "size": size, "filename": name})
+    return await _create_sequence(task, user, frames, rate=rate, description=description, version_id=version_id)
 
 
 @router.get("/items")

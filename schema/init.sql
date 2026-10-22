@@ -812,3 +812,19 @@ CREATE TABLE IF NOT EXISTS review_notes (
 CREATE INDEX IF NOT EXISTS idx_review_notes_task ON review_notes(task_id, created_at);
 CREATE INDEX IF NOT EXISTS idx_review_notes_parent ON review_notes(parent_id);
 CREATE INDEX IF NOT EXISTS idx_review_notes_open ON review_notes(task_id) WHERE parent_id IS NULL AND status <> 'verified';
+
+-- 30. Review image sequences: one CAS blob per frame, so unchanged frames are stored once
+--     across revisions. ``frames`` lists {frame, content_id, size}; the source blob is a JSON
+--     manifest of the same list.
+ALTER TABLE review_items ADD COLUMN IF NOT EXISTS frames JSONB;
+DO $$
+BEGIN
+    IF EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'review_items_kind_check'
+               AND pg_get_constraintdef(oid) NOT LIKE '%sequence%') THEN
+        ALTER TABLE review_items DROP CONSTRAINT review_items_kind_check;
+    END IF;
+    IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'review_items_kind_check') THEN
+        ALTER TABLE review_items ADD CONSTRAINT review_items_kind_check
+            CHECK (kind IN ('video','image','sequence'));
+    END IF;
+END $$;

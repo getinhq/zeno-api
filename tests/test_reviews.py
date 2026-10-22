@@ -277,3 +277,88 @@ async def test_client_share_link(client, tmp_path):
     assert shares[0]["state"] == "active" and shares[0]["last_viewed_at"]
     assert (await client.delete(f"/api/v1/reviews/shares/{share['id']}", headers=sup["headers"])).status_code == 204
     assert (await client.get(base, headers=pw)).status_code == 404
+
+
+def _png_sequence(folder: Path, first: int, count: int, *, prefix: str = "sh010", offset: int = 0) -> list[Path]:
+    """`count` PNG frames numbered from `first`; pixels encode index + offset (distinct images)."""
+    folder.mkdir(parents=True, exist_ok=True)
+    subprocess.run(
+        ["ffmpeg", "-loglevel", "error", "-y", "-f", "lavfi", "-i", f"color=c=gray:s=320x180:r=24:d={count / 24}",
+         "-vf", f"geq=lum='255*mod(floor((N+{offset})/pow(2,floor(X/32))),2)':cb=128:cr=128",
+         "-start_number", str(first), str(folder / f"{prefix}.%04d.png")],
+        check=True,
+    )
+    return sorted(folder.glob("*.png"))
+
+
+async def _upload_sequence(client, who, task_id, paths: list[Path], **form):
+    handles = [open(p, "rb") for p in paths]
+    try:
+        files = [("files", (p.name, h, "image/png")) for p, h in zip(paths, handles)]
+        return await client.post(
+            "/api/v1/reviews/items/sequence/upload",
+            data={"task_id": task_id, **{k: str(v) for k, v in form.items()}},
+            files=files,
+            headers=who["headers"],
+        )
+    finally:
+        for h in handles:
+            h.close()
+
+
+async def test_sequence_frames_dedupe_across_revisions(client, tmp_path, cas):
+    a = await signup(client, "Alpha")
+    p = await make_project(client, a)
+    task = await _task(client, a, p["id"])
+    v1_frames = _png_sequence(tmp_path / "v1", 1001, 48)
+    r = await _upload_sequence(client, a, task["id"], v1_frames, fps="24")
+    assert r.status_code == 201, r.text
+    v1 = await _ready(client, a, r.json()["id"])
+    assert v1["kind"] == "sequence" and v1["processing_status"] == "ready", v1["processing_error"]
+    assert (v1["frame_start"], v1["frame_end"], v1["frame_count"], v1["fps"]) == (1001, 1048, 48, 24)
+    assert v1["sequence"]["reused_frames"] == 0 and v1["sequence"]["pattern"] == "sh010.####.png"
+    assert v1["media"]["original"] is None and v1["media"]["proxy"]
+
+    # v002: same render, frames 1012-1018 re-rendered (different pixels).
+    fixed = _png_sequence(tmp_path / "fix", 1012, 7, offset=500)
+    by_name = {f.name: f for f in v1_frames}
+    by_name.update({f.name: f for f in fixed})
+    v2 = (await _upload_sequence(client, a, task["id"], sorted(by_name.values()), fps="24")).json()
+    seq = v2["sequence"]
+    assert (seq["frames"], seq["reused_frames"], seq["reused_from"]) == (48, 41, ["v001"])
+    changed = sum(f.stat().st_size for f in fixed)
+    assert seq["new_bytes"] == changed
+    assert seq["saved_ratio"] > 0.8
+    # Storage holds each distinct frame once: 48 + 7 frame blobs (plus manifests and proxies).
+    blobs = [x for x in cas.rglob("*") if x.is_file() and ".tmp" not in x.parts]
+    v2 = await _ready(client, a, v2["id"])
+    assert v2["processing_status"] == "ready" and v2["frame_count"] == 48
+    assert len(blobs) <= 48 + 7 + 2 + 4 * 2  # frames + manifests + derived files
+
+
+async def test_sequence_from_preuploaded_blobs_and_gaps(client, tmp_path):
+    from blake3 import blake3
+
+    a = await signup(client, "Alpha")
+    p = await make_project(client, a)
+    task = await _task(client, a, p["id"])
+    paths = [f for f in _png_sequence(tmp_path / "s", 1, 10) if not f.name.endswith(".0005.png")]
+    frames = []
+    for f in paths:
+        data = f.read_bytes()
+        frames.append({"frame": int(f.name.split(".")[1]), "content_id": blake3(data).hexdigest(), "size": len(data), "filename": f.name})
+    body = {"task_id": task["id"], "frames": frames, "fps": "12"}
+    r = await client.post("/api/v1/reviews/items/sequence", json=body, headers=a["headers"])
+    assert r.status_code == 409  # frames must be uploaded first
+    for f, meta in zip(paths, frames):
+        put = await client.put(f"/api/v1/cas/blobs/{meta['content_id']}", content=f.read_bytes(), headers=a["headers"])
+        assert put.status_code in (200, 201)
+    r = await client.post("/api/v1/reviews/items/sequence", json=body, headers=a["headers"])
+    assert r.status_code == 201, r.text
+    item = await _ready(client, a, r.json()["id"])
+    assert item["frame_count"] == 10 and item["fps"] == 12  # frame 5 held from frame 4
+    assert item["sequence"]["missing_frames"] == [5]
+
+    bad = tmp_path / "noframe.png"
+    bad.write_bytes(paths[0].read_bytes())
+    assert (await _upload_sequence(client, a, task["id"], [bad])).status_code == 400
