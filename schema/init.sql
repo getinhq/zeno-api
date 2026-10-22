@@ -681,3 +681,44 @@ CREATE TABLE IF NOT EXISTS api_tokens (
     created_at   TIMESTAMPTZ DEFAULT NOW()
 );
 CREATE INDEX IF NOT EXISTS idx_api_tokens_user ON api_tokens(user_id);
+
+-- 26. Delete rules so a studio (and its people and projects) can be removed cleanly.
+--     References to people become NULL (history stays); rows that only make sense with
+--     their parent go with it. Only rewritten when the rule differs, so re-runs are cheap.
+DO $$
+DECLARE
+    r record;
+BEGIN
+    FOR r IN SELECT * FROM (VALUES
+        ('issue_attachments', 'uploaded_by',  'users',    'SET NULL'),
+        ('issues',            'assignee_id',  'users',    'SET NULL'),
+        ('issues',            'reporter_id',  'users',    'SET NULL'),
+        ('reviews',           'reviewer_id',  'users',    'SET NULL'),
+        ('shot_assets',       'created_by',   'users',    'SET NULL'),
+        ('tasks',             'assignee_id',  'users',    'SET NULL'),
+        ('tasks',             'reviewer_id',  'users',    'SET NULL'),
+        ('versions',          'published_by', 'users',    'SET NULL'),
+        ('shot_assets',       'version_id',   'versions', 'SET NULL'),
+        ('reviews',           'version_id',   'versions', 'CASCADE'),
+        ('render_jobs',       'version_id',   'versions', 'CASCADE'),
+        ('render_jobs',       'shot_id',      'shots',    'CASCADE'),
+        ('tasks',             'asset_id',     'assets',   'CASCADE')
+    ) AS v(tbl, col, ref, act)
+    LOOP
+        IF NOT EXISTS (
+            SELECT 1
+            FROM pg_constraint c
+            JOIN pg_attribute a ON a.attrelid = c.conrelid AND a.attnum = ANY (c.conkey)
+            WHERE c.contype = 'f'
+              AND c.conrelid = r.tbl::regclass
+              AND a.attname = r.col
+              AND c.confdeltype::text = CASE r.act WHEN 'SET NULL' THEN 'n' ELSE 'c' END
+        ) THEN
+            EXECUTE format('ALTER TABLE %I DROP CONSTRAINT IF EXISTS %I', r.tbl, r.tbl || '_' || r.col || '_fkey');
+            EXECUTE format(
+                'ALTER TABLE %I ADD CONSTRAINT %I FOREIGN KEY (%I) REFERENCES %I(id) ON DELETE %s',
+                r.tbl, r.tbl || '_' || r.col || '_fkey', r.col, r.ref, r.act
+            );
+        END IF;
+    END LOOP;
+END $$;

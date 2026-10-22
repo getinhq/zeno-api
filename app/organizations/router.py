@@ -55,3 +55,30 @@ async def update_organization(
         org_id = current_org_id() or await default_org_id_for_unscoped(conn)
         await conn.execute("UPDATE organizations SET name = $1 WHERE id = $2", name, org_id)
         return await _load(conn)
+
+
+@router.delete("")
+async def delete_organization(
+    body: dict = Body(...),
+    user: CurrentUser = Depends(require_current_user),
+) -> dict:
+    """
+    Permanently delete the caller's studio: its people, projects, tasks, versions, invites
+    and settings rows. Owner only, and ``confirm_name`` must match the studio name exactly.
+    Published file blobs are content-addressed and may be shared, so they are not removed here.
+    """
+    async with acquire() as conn:
+        org_id = current_org_id()
+        if org_id is None:
+            raise HTTPException(status_code=400, detail="Sign in to delete a studio")
+        org = await conn.fetchrow("SELECT id, name, owner_id FROM organizations WHERE id = $1", org_id)
+        if org is None:
+            raise HTTPException(status_code=404, detail="Organization not found")
+        if org["owner_id"] != user.db_id:
+            raise HTTPException(status_code=403, detail="Only the studio owner can delete the studio")
+        if (body.get("confirm_name") or "") != org["name"]:
+            raise HTTPException(status_code=400, detail="Type the studio name exactly to confirm")
+        async with conn.transaction():
+            await conn.execute("DELETE FROM organizations WHERE id = $1", org_id)
+    return {"deleted": str(org_id)}
+
