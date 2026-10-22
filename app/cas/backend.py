@@ -126,3 +126,15 @@ class NASBackend:
         target.parent.mkdir(parents=True, exist_ok=True)
         os.replace(Path(source_path).resolve(), target)
         return True
+
+    def list_blobs(self) -> Iterator[tuple[str, int]]:
+        """Every stored blob as (hash, size) (temp files excluded)."""
+        if not self.root.is_dir():
+            return
+        for path in self.root.rglob("*"):
+            if path.is_file() and ".tmp" not in path.relative_to(self.root).parts and is_valid_hash(path.name):
+                yield path.name, path.stat().st_size
+
+    def delete(self, hash_str: str) -> None:
+        if is_valid_hash(hash_str):
+            hash_to_path(self.root, hash_str).unlink(missing_ok=True)

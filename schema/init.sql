@@ -832,3 +832,6 @@ END $$;
 -- 31. Per-studio storage workflow: whether chunked dedup is used, per file extension.
 --     Shape and defaults live in app/storage_policy.py; '{}' means "recommended defaults".
 ALTER TABLE organizations ADD COLUMN IF NOT EXISTS storage_policy JSONB NOT NULL DEFAULT '{}'::jsonb;
+
+-- 32. Last storage integrity check per studio (report JSON; see app/storage_check).
+ALTER TABLE organizations ADD COLUMN IF NOT EXISTS last_storage_check JSONB;

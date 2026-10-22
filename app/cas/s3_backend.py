@@ -147,3 +147,14 @@ class S3Backend:
         """Directory for streaming uploads before verification (same pattern as NAS)."""
         p = Path(tempfile.mkdtemp(prefix="cas_s3_chunk_"))
         return p
+
+    def list_blobs(self) -> Iterator[tuple[str, int]]:
+        """Every stored blob as (hash, size)."""
+        paginator = self._client.get_paginator("list_objects_v2")
+        for page in paginator.paginate(Bucket=self.bucket):
+            for obj in page.get("Contents", []) or []:
+                if is_valid_hash(obj["Key"]):
+                    yield obj["Key"], int(obj["Size"])
+
+    def delete(self, hash_str: str) -> None:
+        self._client.delete_object(Bucket=self.bucket, Key=self._key(hash_str))
