@@ -81,6 +81,26 @@ class S3Backend:
         finally:
             body.close()
 
+    def get_range(self, hash_str: str, start: int, end: int) -> Iterator[bytes]:
+        """Stream bytes ``start``..``end`` inclusive (HTTP Range semantics)."""
+        if not is_valid_hash(hash_str):
+            raise ValueError("Invalid hash: must be 64 lowercase hex characters")
+        try:
+            obj = self._client.get_object(
+                Bucket=self.bucket, Key=self._key(hash_str), Range=f"bytes={start}-{end}"
+            )
+        except ClientError as e:
+            code = e.response.get("Error", {}).get("Code", "")
+            if code in ("404", "NoSuchKey", "NotFound"):
+                raise FileNotFoundError(f"Blob not found: {hash_str[:16]}...") from e
+            raise
+        body = obj["Body"]
+        try:
+            while chunk := body.read(65536):
+                yield chunk
+        finally:
+            body.close()
+
     def put_stream(self, hash_str: str, stream: BinaryIO) -> bool:
         if not is_valid_hash(hash_str):
             raise ValueError("Invalid hash: must be 64 lowercase hex characters")

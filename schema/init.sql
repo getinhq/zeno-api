@@ -722,3 +722,93 @@ BEGIN
         END IF;
     END LOOP;
 END $$;
+
+-- 27. Review: media submitted for a task, one numbered revision per submission.
+--     The source file and every derived file (H.264 proxy, thumbnail, filmstrip) live in CAS.
+--     Frames are stored as scene frame numbers (frame_start .. frame_start + frame_count - 1)
+--     so notes keep their place when a new revision of the same task arrives.
+CREATE TABLE IF NOT EXISTS review_items (
+    id                   UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    project_id           UUID NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+    task_id              UUID NOT NULL REFERENCES tasks(id) ON DELETE CASCADE,
+    revision             INT NOT NULL,
+    version_id           UUID REFERENCES versions(id) ON DELETE SET NULL,
+    description          TEXT,
+    kind                 TEXT NOT NULL DEFAULT 'video' CHECK (kind IN ('video','image')),
+    source_content_id    TEXT NOT NULL,
+    source_filename      TEXT NOT NULL,
+    source_size          BIGINT,
+    proxy_content_id     TEXT,
+    proxy_mime           TEXT,
+    thumb_content_id     TEXT,
+    filmstrip_content_id TEXT,
+    filmstrip_tiles      INT,
+    filmstrip_step       INT,
+    fps_num              INT,
+    fps_den              INT,
+    frame_start          INT NOT NULL DEFAULT 1,
+    frame_count          INT,
+    width                INT,
+    height               INT,
+    has_audio            BOOLEAN NOT NULL DEFAULT false,
+    source_info          JSONB NOT NULL DEFAULT '{}'::jsonb,
+    processing_status    TEXT NOT NULL DEFAULT 'queued'
+                         CHECK (processing_status IN ('queued','processing','ready','failed')),
+    processing_error     TEXT,
+    review_status        TEXT NOT NULL DEFAULT 'pending'
+                         CHECK (review_status IN ('pending','approved','changes_requested')),
+    decided_by           UUID REFERENCES users(id) ON DELETE SET NULL,
+    decided_at           TIMESTAMPTZ,
+    submitted_by         UUID REFERENCES users(id) ON DELETE SET NULL,
+    created_at           TIMESTAMPTZ DEFAULT NOW(),
+    UNIQUE (task_id, revision)
+);
+CREATE INDEX IF NOT EXISTS idx_review_items_project ON review_items(project_id, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_review_items_processing ON review_items(processing_status)
+    WHERE processing_status IN ('queued','processing');
+
+-- 28. Review share links for clients: no account, token (SHA-256 stored) + optional password.
+CREATE TABLE IF NOT EXISTS review_shares (
+    id              UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    project_id      UUID NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+    token_hash      TEXT NOT NULL UNIQUE,
+    title           TEXT NOT NULL DEFAULT '',
+    item_ids        UUID[] NOT NULL,
+    password_hash   TEXT,
+    allow_decisions BOOLEAN NOT NULL DEFAULT true,
+    expires_at      TIMESTAMPTZ,
+    revoked_at      TIMESTAMPTZ,
+    last_viewed_at  TIMESTAMPTZ,
+    created_by      UUID REFERENCES users(id) ON DELETE SET NULL,
+    created_at      TIMESTAMPTZ DEFAULT NOW()
+);
+CREATE INDEX IF NOT EXISTS idx_review_shares_project ON review_shares(project_id);
+
+-- 29. Review notes. A top-level note belongs to the task (not one revision) and moves
+--     open -> fixed (artist) -> verified (reviewer), or back to open. Replies and status
+--     changes are child rows (kind 'comment' / 'status'), which form the note's history.
+--     Client notes (made through a share link) carry guest_name and visibility 'client'.
+CREATE TABLE IF NOT EXISTS review_notes (
+    id               UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    project_id       UUID NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+    task_id          UUID NOT NULL REFERENCES tasks(id) ON DELETE CASCADE,
+    item_id          UUID NOT NULL REFERENCES review_items(id) ON DELETE CASCADE,
+    parent_id        UUID REFERENCES review_notes(id) ON DELETE CASCADE,
+    kind             TEXT NOT NULL DEFAULT 'comment' CHECK (kind IN ('comment','status','decision')),
+    body             TEXT NOT NULL DEFAULT '',
+    frame            INT,
+    frame_end        INT,
+    drawing          JSONB,
+    status           TEXT CHECK (status IN ('open','fixed','verified')),
+    fixed_in_item_id UUID REFERENCES review_items(id) ON DELETE SET NULL,
+    visibility       TEXT NOT NULL DEFAULT 'internal' CHECK (visibility IN ('internal','client')),
+    author_id        UUID REFERENCES users(id) ON DELETE SET NULL,
+    guest_name       TEXT,
+    share_id         UUID REFERENCES review_shares(id) ON DELETE SET NULL,
+    meta             JSONB NOT NULL DEFAULT '{}'::jsonb,
+    created_at       TIMESTAMPTZ DEFAULT NOW(),
+    updated_at       TIMESTAMPTZ DEFAULT NOW()
+);
+CREATE INDEX IF NOT EXISTS idx_review_notes_task ON review_notes(task_id, created_at);
+CREATE INDEX IF NOT EXISTS idx_review_notes_parent ON review_notes(parent_id);
+CREATE INDEX IF NOT EXISTS idx_review_notes_open ON review_notes(task_id) WHERE parent_id IS NULL AND status <> 'verified';

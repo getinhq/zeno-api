@@ -54,6 +54,9 @@ _PUBLIC_EXACT = {
 _PUBLIC_PREFIXES = (
     # Invite preview/accept: the invite token itself is the credential.
     "/api/v1/invites/public/",
+    # Client review links (token, optional password) and signed review media URLs.
+    "/api/v1/review-shares/public/",
+    "/api/v1/review-media/",
 )
 
 
@@ -201,6 +204,18 @@ _ORG_SQL = {
     "task_template": "SELECT organization_id FROM task_templates WHERE id = $1",
     "invite": "SELECT organization_id FROM invites WHERE id = $1",
     "user": "SELECT organization_id FROM users WHERE id = $1",
+    "review_item": """
+        SELECT p.organization_id FROM review_items ri
+        JOIN projects p ON p.id = ri.project_id WHERE ri.id = $1
+    """,
+    "review_note": """
+        SELECT p.organization_id FROM review_notes n
+        JOIN projects p ON p.id = n.project_id WHERE n.id = $1
+    """,
+    "review_share": """
+        SELECT p.organization_id FROM review_shares rs
+        JOIN projects p ON p.id = rs.project_id WHERE rs.id = $1
+    """,
 }
 
 

@@ -59,6 +59,23 @@ class NASBackend:
             while chunk := f.read(65536):
                 yield chunk
 
+    def get_range(self, hash_str: str, start: int, end: int) -> Iterator[bytes]:
+        """Stream bytes ``start``..``end`` inclusive (HTTP Range semantics)."""
+        if not is_valid_hash(hash_str):
+            raise ValueError("Invalid hash: must be 64 lowercase hex characters")
+        path = hash_to_path(self.root, hash_str)
+        if not path.is_file():
+            raise FileNotFoundError(f"Blob not found: {hash_str[:16]}...")
+        remaining = end - start + 1
+        with open(path, "rb") as f:
+            f.seek(start)
+            while remaining > 0:
+                chunk = f.read(min(65536, remaining))
+                if not chunk:
+                    break
+                remaining -= len(chunk)
+                yield chunk
+
     def put_stream(self, hash_str: str, stream: BinaryIO) -> bool:
         """
         Write stream to CAS: temp file + BLAKE3 on the fly, then atomic move.

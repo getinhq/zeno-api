@@ -29,6 +29,11 @@ from app.shots.router import router as shots_router
 from app.task_templates.router import router as task_templates_router
 from app.tasks.router import router as tasks_router
 from app.resolver.router import router as resolver_router
+from app.reviews import processing as review_processing
+from app.reviews.media_urls import router as review_media_router
+from app.reviews.router import router as reviews_router
+from app.reviews.shares import public_router as review_shares_public_router
+from app.reviews.shares import router as review_shares_router
 from app.schedule.router import router as schedule_router
 from app.settings.router import router as settings_router
 from app.manifests.store import ensure_manifest_indexes
@@ -71,6 +76,10 @@ async def lifespan(app: FastAPI):
             pass
     if app_config.DATABASE_URL:
         await get_pool()
+        try:
+            await review_processing.resume_pending()
+        except Exception:
+            pass
     yield
     await close_pool()
     await close_redis()
@@ -108,6 +117,10 @@ app.include_router(invites_router)
 app.include_router(task_templates_router)
 app.include_router(casting_router)
 app.include_router(schedule_router)
+app.include_router(review_shares_router)
+app.include_router(review_shares_public_router)
+app.include_router(reviews_router)
+app.include_router(review_media_router)
 
 
 @app.get("/")
