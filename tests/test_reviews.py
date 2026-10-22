@@ -362,3 +362,21 @@ async def test_sequence_from_preuploaded_blobs_and_gaps(client, tmp_path):
     bad = tmp_path / "noframe.png"
     bad.write_bytes(paths[0].read_bytes())
     assert (await _upload_sequence(client, a, task["id"], [bad])).status_code == 400
+
+
+async def test_sequences_follow_the_storage_policy(client, tmp_path):
+    a = await signup(client, "Alpha")
+    p = await make_project(client, a)
+    task = await _task(client, a, p["id"])
+    frames = _png_sequence(tmp_path / "s", 1001, 4)
+    await client.put("/api/v1/storage-policy", json={"rules": {"png": "off"}}, headers=a["headers"])
+    r = await _upload_sequence(client, a, task["id"], frames)
+    assert r.status_code == 403 and "Storage workflow" in r.json()["detail"]
+    await client.put("/api/v1/storage-policy", json={"rules": {}, "chunking_enabled": False}, headers=a["headers"])
+    assert (await _upload_sequence(client, a, task["id"], frames)).status_code == 403
+    await client.post("/api/v1/storage-policy/reset", headers=a["headers"])
+    assert (await _upload_sequence(client, a, task["id"], frames)).status_code == 201
+    # Movies are unaffected by the switch.
+    await client.put("/api/v1/storage-policy", json={"chunking_enabled": False}, headers=a["headers"])
+    assert (await _submit(client, a, task["id"], _clip(tmp_path / "m.mp4", seconds=0.5))).status_code == 201
+    await processing.wait_idle()

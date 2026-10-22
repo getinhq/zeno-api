@@ -32,6 +32,8 @@ from app.events.log import emit as emit_event
 from app.notifications.service import emit as emit_notification
 from app.reviews import processing
 from app.reviews.media_urls import sign
+from app.storage_policy.policy import resolve as resolve_storage
+from app.storage_policy.router import load_for_project as load_policy_for_project
 from app.tenancy import ensure_in_scope, org_filter_sql
 
 router = APIRouter(prefix="/api/v1/reviews", tags=["reviews"])
@@ -417,6 +419,19 @@ async def _create_item(
 
 # --- image sequences -------------------------------------------------------------------
 
+
+async def ensure_sequences_allowed(project_id, ext: str) -> None:
+    """Studio storage workflow can switch per-frame sequences off (per format or entirely)."""
+    async with acquire() as conn:
+        stored = await load_policy_for_project(conn, project_id)
+    decision = resolve_storage(stored, ext)
+    if decision["strategy"] == "off":
+        raise HTTPException(
+            status_code=403,
+            detail=f"Image sequences are turned off for .{decision['extension']} in Settings → Storage workflow "
+            f"({decision['reason']}) Submit a movie instead.",
+        )
+
 MAX_SEQUENCE_FRAMES = 20000
 _FRAME_NUMBER_RE = re.compile(r"(\d+)(?=\.[A-Za-z0-9]+$)")
 
@@ -458,6 +473,7 @@ async def _create_sequence(
     ext = _Path(frames[0]["filename"]).suffix.lower()
     if ext not in IMAGE_EXTS or any(_Path(f["filename"]).suffix.lower() != ext for f in frames):
         raise HTTPException(status_code=415, detail="A sequence is one image format (EXR, PNG, TIFF, JPEG, DPX…)")
+    await ensure_sequences_allowed(task["project_id"], ext)
 
     # What this revision really adds: frames whose bytes no earlier revision of the task stored.
     async with acquire() as conn:
@@ -565,6 +581,9 @@ async def upload_sequence(
     if len(files) > MAX_SEQUENCE_FRAMES:
         raise HTTPException(status_code=400, detail=f"Sequences are limited to {MAX_SEQUENCE_FRAMES} frames")
     task = await _load_task(task_id, version_id)
+    if files:
+        # Refuse before storing any frame when the studio has sequences off for this format.
+        await ensure_sequences_allowed(task["project_id"], _Path(files[0].filename or "").suffix.lower())
     rate = _parse_fps(fps)
     frames = []
     for f in files:

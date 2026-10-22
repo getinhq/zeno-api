@@ -35,6 +35,7 @@ from app.reviews.router import router as reviews_router
 from app.reviews.shares import public_router as review_shares_public_router
 from app.reviews.shares import router as review_shares_router
 from app.schedule.router import router as schedule_router
+from app.storage_policy.router import router as storage_policy_router
 from app.settings.router import router as settings_router
 from app.manifests.store import ensure_manifest_indexes
 from app.settings.store import ensure_settings_indexes
@@ -121,6 +122,7 @@ app.include_router(review_shares_router)
 app.include_router(review_shares_public_router)
 app.include_router(reviews_router)
 app.include_router(review_media_router)
+app.include_router(storage_policy_router)
 
 
 @app.get("/")
