@@ -1,3 +1,9 @@
+"""Redis cache for CAS existence checks.
+
+Only "exists" is cached: a stored blob never changes, while a "missing" answer goes stale the
+moment someone uploads it (caching it made clients re-upload data the server already had).
+Whatever deletes blobs (garbage collection) must call ``forget_exists``.
+"""
 from __future__ import annotations
 
 from app.config import MANIFEST_CACHE_TTL_SECONDS
@@ -17,11 +23,17 @@ async def get_cached_exists(content_hash: str) -> bool | None:
         return None
     if raw == "1":
         return True
-    if raw == "0":
-        return False
     return None
 
 
 async def set_cached_exists(content_hash: str, exists: bool) -> None:
     redis = await get_redis()
-    await redis.set(_key(content_hash), "1" if exists else "0", ex=MANIFEST_CACHE_TTL_SECONDS)
+    if not exists:
+        await redis.delete(_key(content_hash))
+        return
+    await redis.set(_key(content_hash), "1", ex=MANIFEST_CACHE_TTL_SECONDS)
+
+
+async def forget_exists(content_hash: str) -> None:
+    redis = await get_redis()
+    await redis.delete(_key(content_hash))
