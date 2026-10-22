@@ -9,6 +9,8 @@ import asyncpg
 from fastapi import APIRouter, Body, HTTPException, Path, Query
 
 from app.db import acquire
+from app.task_templates.service import apply_default_for_shot
+from app.tenancy import ensure_in_scope
 
 router = APIRouter(prefix="/api/v1", tags=["shots"])
 ALLOWED_STAGES = ("Animatics", "Layout", "Animation", "Lighting", "Comp")
@@ -61,6 +63,7 @@ async def list_shots_for_sequence(
     query += " ORDER BY shot_code"
 
     async with acquire() as conn:
+        await ensure_in_scope(conn, "sequence", sequence_id)
         rows = await conn.fetch(query, *params)
     return [
         {
@@ -122,6 +125,7 @@ async def list_shots_for_project(
     params.extend([limit, offset])
 
     async with acquire() as conn:
+        await ensure_in_scope(conn, "project", project_id)
         rows = await conn.fetch(query, *params)
     return [
         {
@@ -147,6 +151,7 @@ async def list_shots_for_project(
 async def get_shot(shot_id: UUID = Path(...)) -> dict:
     """Get one shot by id."""
     async with acquire() as conn:
+        await ensure_in_scope(conn, "shot", shot_id)
         row = await conn.fetchrow(
             """
             SELECT id, sequence_id, shot_code, stage, frame_start, frame_end,
@@ -191,7 +196,8 @@ async def create_shot(sequence_id: UUID, body: dict = Body(...)) -> dict:
     if stage not in ALLOWED_STAGES:
         raise HTTPException(status_code=400, detail=f"stage must be one of: {', '.join(ALLOWED_STAGES)}")
 
-    async with acquire() as conn:
+    async with acquire() as conn, conn.transaction():
+        await ensure_in_scope(conn, "sequence", sequence_id)
         try:
             row = await conn.fetchrow(
                 """
@@ -220,8 +226,13 @@ async def create_shot(sequence_id: UUID, body: dict = Body(...)) -> dict:
                 status_code=409,
                 detail="shot_code must be unique per sequence",
             )
+        # New shots get their tasks from the studio's default shot template.
+        tasks_created = 0
+        if body.get("apply_template", True):
+            tasks_created = await apply_default_for_shot(conn, row)
 
     return {
+        "tasks_created": tasks_created,
         "id": str(row["id"]),
         "sequence_id": str(row["sequence_id"]),
         "shot_code": row["shot_code"],
@@ -270,6 +281,7 @@ async def update_shot(shot_id: UUID, body: dict = Body(...)) -> dict:
     )
 
     async with acquire() as conn:
+        await ensure_in_scope(conn, "shot", shot_id)
         row = await conn.fetchrow(query, *params)
 
     if not row:

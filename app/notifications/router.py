@@ -17,6 +17,7 @@ from fastapi import APIRouter, Body, Depends, HTTPException, Query
 
 from app.auth.deps import CurrentUser, require_current_user
 from app.db import acquire
+from app.tenancy import current_org_id, ensure_in_scope
 
 router = APIRouter(prefix="/api/v1/notifications", tags=["notifications"])
 
@@ -51,6 +52,7 @@ async def list_notifications(
     list_where = where + (" AND n.read_at IS NULL" if unread_only else "")
 
     async with acquire() as conn:
+        await ensure_in_scope(conn, "project", project_id)
         rows = await conn.fetch(
             f"""
             SELECT n.id, n.project_id, n.user_id, n.kind, n.payload,
@@ -108,11 +110,15 @@ async def mark_read(
                 WHERE id = ANY($1::uuid[])
                   AND (user_id IS NULL OR user_id = $2)
                   AND read_at IS NULL
+                  AND project_id IN (
+                      SELECT id FROM projects WHERE $3::uuid IS NULL OR organization_id = $3)
                 """,
                 ids,
                 user.id,
+                current_org_id(),
             )
         elif all_for_project:
+            await ensure_in_scope(conn, "project", all_for_project)
             await conn.execute(
                 """
                 UPDATE notifications

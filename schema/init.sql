@@ -524,3 +524,314 @@ CREATE TABLE IF NOT EXISTS events (
 );
 CREATE INDEX IF NOT EXISTS idx_events_project_created ON events(project_id, created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_events_kind            ON events(kind);
+
+-- 18. Organizations (multi-tenant workspaces). Each user belongs to one organization;
+--     every project belongs to one organization. API requests are scoped by it.
+CREATE TABLE IF NOT EXISTS organizations (
+    id          UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    name        TEXT NOT NULL,
+    slug        TEXT NOT NULL UNIQUE,
+    owner_id    UUID REFERENCES users(id) ON DELETE SET NULL,
+    plan        TEXT NOT NULL DEFAULT 'free',
+    settings    JSONB NOT NULL DEFAULT '{}'::jsonb,
+    created_at  TIMESTAMPTZ DEFAULT NOW(),
+    updated_at  TIMESTAMPTZ DEFAULT NOW()
+);
+
+DROP TRIGGER IF EXISTS organizations_timestamp ON organizations;
+CREATE TRIGGER organizations_timestamp
+    BEFORE UPDATE ON organizations
+    FOR EACH ROW EXECUTE PROCEDURE update_timestamp();
+
+ALTER TABLE users    ADD COLUMN IF NOT EXISTS organization_id UUID REFERENCES organizations(id) ON DELETE CASCADE;
+ALTER TABLE projects ADD COLUMN IF NOT EXISTS organization_id UUID REFERENCES organizations(id) ON DELETE CASCADE;
+CREATE INDEX IF NOT EXISTS idx_users_organization    ON users(organization_id);
+CREATE INDEX IF NOT EXISTS idx_projects_organization ON projects(organization_id);
+
+-- Backfill: rows from the single-tenant era move into a "Default Studio" organization,
+-- owned by its oldest pipeline user.
+DO $$
+DECLARE
+    default_org UUID;
+BEGIN
+    IF EXISTS (SELECT 1 FROM users WHERE organization_id IS NULL)
+       OR EXISTS (SELECT 1 FROM projects WHERE organization_id IS NULL) THEN
+        SELECT id INTO default_org FROM organizations WHERE slug = 'default';
+        IF default_org IS NULL THEN
+            INSERT INTO organizations (name, slug) VALUES ('Default Studio', 'default')
+            RETURNING id INTO default_org;
+        END IF;
+        UPDATE users    SET organization_id = default_org WHERE organization_id IS NULL;
+        UPDATE projects SET organization_id = default_org WHERE organization_id IS NULL;
+        UPDATE organizations
+           SET owner_id = (
+                SELECT id FROM users
+                 WHERE organization_id = default_org AND app_role = 'pipeline'
+                 ORDER BY created_at LIMIT 1)
+         WHERE id = default_org AND owner_id IS NULL;
+    END IF;
+END $$;
+
+-- Project names/codes are unique per organization, not globally.
+ALTER TABLE projects DROP CONSTRAINT IF EXISTS projects_name_key;
+ALTER TABLE projects DROP CONSTRAINT IF EXISTS projects_code_key;
+CREATE UNIQUE INDEX IF NOT EXISTS projects_org_name_key ON projects(organization_id, name);
+CREATE UNIQUE INDEX IF NOT EXISTS projects_org_code_key ON projects(organization_id, code);
+
+-- 19. Invites. The link carries a random token; only its SHA-256 is stored.
+CREATE TABLE IF NOT EXISTS invites (
+    id               UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    organization_id  UUID NOT NULL REFERENCES organizations(id) ON DELETE CASCADE,
+    email            TEXT,
+    app_role         TEXT NOT NULL DEFAULT 'artist'
+                     CHECK (app_role IN ('artist','pipeline','supervisor','production')),
+    department       TEXT,
+    project_id       UUID REFERENCES projects(id) ON DELETE SET NULL,
+    message          TEXT,
+    token_hash       TEXT NOT NULL UNIQUE,
+    invited_by       UUID REFERENCES users(id) ON DELETE SET NULL,
+    expires_at       TIMESTAMPTZ NOT NULL,
+    accepted_at      TIMESTAMPTZ,
+    accepted_user_id UUID REFERENCES users(id) ON DELETE SET NULL,
+    revoked_at       TIMESTAMPTZ,
+    email_sent_at    TIMESTAMPTZ,
+    created_at       TIMESTAMPTZ DEFAULT NOW()
+);
+CREATE INDEX IF NOT EXISTS idx_invites_org ON invites(organization_id, created_at DESC);
+
+-- 20. Wider task vocabulary for small studios (concept, storyboard, lookdev, groom, cfx, edit).
+DO $$
+BEGIN
+    ALTER TABLE tasks DROP CONSTRAINT IF EXISTS tasks_type_check;
+    ALTER TABLE tasks ADD CONSTRAINT tasks_type_check CHECK (type IN (
+        'concept','storyboard','model','texture','rig','lookdev','groom','cfx',
+        'layout','animation','fx','lighting','render','comp','edit'));
+END $$;
+
+-- 21. Task templates: ordered steps that become tasks when an asset/shot is created.
+--     steps = [{"type": "rig", "title": "Rig", "duration_days": 5, "depends_on": [1]}, ...]
+--     depends_on holds indexes of earlier steps (used by the schedule as task dependencies).
+CREATE TABLE IF NOT EXISTS task_templates (
+    id               UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    organization_id  UUID NOT NULL REFERENCES organizations(id) ON DELETE CASCADE,
+    name             TEXT NOT NULL,
+    entity_kind      TEXT NOT NULL CHECK (entity_kind IN ('asset','shot')),
+    asset_type       TEXT,
+    is_default       BOOLEAN NOT NULL DEFAULT FALSE,
+    steps            JSONB NOT NULL DEFAULT '[]'::jsonb,
+    created_at       TIMESTAMPTZ DEFAULT NOW(),
+    updated_at       TIMESTAMPTZ DEFAULT NOW()
+);
+DROP TRIGGER IF EXISTS task_templates_timestamp ON task_templates;
+CREATE TRIGGER task_templates_timestamp
+    BEFORE UPDATE ON task_templates
+    FOR EACH ROW EXECUTE PROCEDURE update_timestamp();
+CREATE INDEX IF NOT EXISTS idx_task_templates_org ON task_templates(organization_id);
+-- At most one default per (org, kind, asset type).
+CREATE UNIQUE INDEX IF NOT EXISTS task_templates_one_default
+    ON task_templates (organization_id, entity_kind, COALESCE(asset_type, ''))
+    WHERE is_default;
+
+-- 22. Project milestones (created by project templates, edited on the schedule).
+CREATE TABLE IF NOT EXISTS milestones (
+    id           UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    project_id   UUID NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+    name         TEXT NOT NULL,
+    due_date     DATE NOT NULL,
+    kind         TEXT NOT NULL DEFAULT 'milestone' CHECK (kind IN ('milestone','review','delivery')),
+    description  TEXT,
+    done_at      TIMESTAMPTZ,
+    created_at   TIMESTAMPTZ DEFAULT NOW(),
+    updated_at   TIMESTAMPTZ DEFAULT NOW()
+);
+DROP TRIGGER IF EXISTS milestones_timestamp ON milestones;
+CREATE TRIGGER milestones_timestamp
+    BEFORE UPDATE ON milestones
+    FOR EACH ROW EXECUTE PROCEDURE update_timestamp();
+CREATE INDEX IF NOT EXISTS idx_milestones_project ON milestones(project_id, due_date);
+
+-- 23. Shot casting: instance_name must be non-null for the (shot, asset, instance) uniqueness
+--     to hold (NULLs never conflict in Postgres).
+UPDATE shot_assets SET instance_name = '' WHERE instance_name IS NULL;
+ALTER TABLE shot_assets ALTER COLUMN instance_name SET DEFAULT '';
+ALTER TABLE shot_assets ALTER COLUMN instance_name SET NOT NULL;
+
+-- 24. Scheduling: task start dates and finish-to-start dependencies.
+ALTER TABLE tasks ADD COLUMN IF NOT EXISTS start_date DATE;
+CREATE TABLE IF NOT EXISTS task_dependencies (
+    task_id            UUID NOT NULL REFERENCES tasks(id) ON DELETE CASCADE,
+    depends_on_task_id UUID NOT NULL REFERENCES tasks(id) ON DELETE CASCADE,
+    source             TEXT NOT NULL DEFAULT 'manual' CHECK (source IN ('manual','template','casting')),
+    created_at         TIMESTAMPTZ DEFAULT NOW(),
+    PRIMARY KEY (task_id, depends_on_task_id),
+    CHECK (task_id <> depends_on_task_id)
+);
+CREATE INDEX IF NOT EXISTS idx_task_dependencies_on ON task_dependencies(depends_on_task_id);
+
+-- 25. Personal access tokens (DCC plugins, scripts). Only the SHA-256 is stored.
+CREATE TABLE IF NOT EXISTS api_tokens (
+    id           UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    user_id      UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    name         TEXT NOT NULL,
+    token_hash   TEXT NOT NULL UNIQUE,
+    prefix       TEXT NOT NULL,
+    expires_at   TIMESTAMPTZ,
+    last_used_at TIMESTAMPTZ,
+    revoked_at   TIMESTAMPTZ,
+    created_at   TIMESTAMPTZ DEFAULT NOW()
+);
+CREATE INDEX IF NOT EXISTS idx_api_tokens_user ON api_tokens(user_id);
+
+-- 26. Delete rules so a studio (and its people and projects) can be removed cleanly.
+--     References to people become NULL (history stays); rows that only make sense with
+--     their parent go with it. Only rewritten when the rule differs, so re-runs are cheap.
+DO $$
+DECLARE
+    r record;
+BEGIN
+    FOR r IN SELECT * FROM (VALUES
+        ('issue_attachments', 'uploaded_by',  'users',    'SET NULL'),
+        ('issues',            'assignee_id',  'users',    'SET NULL'),
+        ('issues',            'reporter_id',  'users',    'SET NULL'),
+        ('reviews',           'reviewer_id',  'users',    'SET NULL'),
+        ('shot_assets',       'created_by',   'users',    'SET NULL'),
+        ('tasks',             'assignee_id',  'users',    'SET NULL'),
+        ('tasks',             'reviewer_id',  'users',    'SET NULL'),
+        ('versions',          'published_by', 'users',    'SET NULL'),
+        ('shot_assets',       'version_id',   'versions', 'SET NULL'),
+        ('reviews',           'version_id',   'versions', 'CASCADE'),
+        ('render_jobs',       'version_id',   'versions', 'CASCADE'),
+        ('render_jobs',       'shot_id',      'shots',    'CASCADE'),
+        ('tasks',             'asset_id',     'assets',   'CASCADE')
+    ) AS v(tbl, col, ref, act)
+    LOOP
+        IF NOT EXISTS (
+            SELECT 1
+            FROM pg_constraint c
+            JOIN pg_attribute a ON a.attrelid = c.conrelid AND a.attnum = ANY (c.conkey)
+            WHERE c.contype = 'f'
+              AND c.conrelid = r.tbl::regclass
+              AND a.attname = r.col
+              AND c.confdeltype::text = CASE r.act WHEN 'SET NULL' THEN 'n' ELSE 'c' END
+        ) THEN
+            EXECUTE format('ALTER TABLE %I DROP CONSTRAINT IF EXISTS %I', r.tbl, r.tbl || '_' || r.col || '_fkey');
+            EXECUTE format(
+                'ALTER TABLE %I ADD CONSTRAINT %I FOREIGN KEY (%I) REFERENCES %I(id) ON DELETE %s',
+                r.tbl, r.tbl || '_' || r.col || '_fkey', r.col, r.ref, r.act
+            );
+        END IF;
+    END LOOP;
+END $$;
+
+-- 27. Review: media submitted for a task, one numbered revision per submission.
+--     The source file and every derived file (H.264 proxy, thumbnail, filmstrip) live in CAS.
+--     Frames are stored as scene frame numbers (frame_start .. frame_start + frame_count - 1)
+--     so notes keep their place when a new revision of the same task arrives.
+CREATE TABLE IF NOT EXISTS review_items (
+    id                   UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    project_id           UUID NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+    task_id              UUID NOT NULL REFERENCES tasks(id) ON DELETE CASCADE,
+    revision             INT NOT NULL,
+    version_id           UUID REFERENCES versions(id) ON DELETE SET NULL,
+    description          TEXT,
+    kind                 TEXT NOT NULL DEFAULT 'video' CHECK (kind IN ('video','image')),
+    source_content_id    TEXT NOT NULL,
+    source_filename      TEXT NOT NULL,
+    source_size          BIGINT,
+    proxy_content_id     TEXT,
+    proxy_mime           TEXT,
+    thumb_content_id     TEXT,
+    filmstrip_content_id TEXT,
+    filmstrip_tiles      INT,
+    filmstrip_step       INT,
+    fps_num              INT,
+    fps_den              INT,
+    frame_start          INT NOT NULL DEFAULT 1,
+    frame_count          INT,
+    width                INT,
+    height               INT,
+    has_audio            BOOLEAN NOT NULL DEFAULT false,
+    source_info          JSONB NOT NULL DEFAULT '{}'::jsonb,
+    processing_status    TEXT NOT NULL DEFAULT 'queued'
+                         CHECK (processing_status IN ('queued','processing','ready','failed')),
+    processing_error     TEXT,
+    review_status        TEXT NOT NULL DEFAULT 'pending'
+                         CHECK (review_status IN ('pending','approved','changes_requested')),
+    decided_by           UUID REFERENCES users(id) ON DELETE SET NULL,
+    decided_at           TIMESTAMPTZ,
+    submitted_by         UUID REFERENCES users(id) ON DELETE SET NULL,
+    created_at           TIMESTAMPTZ DEFAULT NOW(),
+    UNIQUE (task_id, revision)
+);
+CREATE INDEX IF NOT EXISTS idx_review_items_project ON review_items(project_id, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_review_items_processing ON review_items(processing_status)
+    WHERE processing_status IN ('queued','processing');
+
+-- 28. Review share links for clients: no account, token (SHA-256 stored) + optional password.
+CREATE TABLE IF NOT EXISTS review_shares (
+    id              UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    project_id      UUID NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+    token_hash      TEXT NOT NULL UNIQUE,
+    title           TEXT NOT NULL DEFAULT '',
+    item_ids        UUID[] NOT NULL,
+    password_hash   TEXT,
+    allow_decisions BOOLEAN NOT NULL DEFAULT true,
+    expires_at      TIMESTAMPTZ,
+    revoked_at      TIMESTAMPTZ,
+    last_viewed_at  TIMESTAMPTZ,
+    created_by      UUID REFERENCES users(id) ON DELETE SET NULL,
+    created_at      TIMESTAMPTZ DEFAULT NOW()
+);
+CREATE INDEX IF NOT EXISTS idx_review_shares_project ON review_shares(project_id);
+
+-- 29. Review notes. A top-level note belongs to the task (not one revision) and moves
+--     open -> fixed (artist) -> verified (reviewer), or back to open. Replies and status
+--     changes are child rows (kind 'comment' / 'status'), which form the note's history.
+--     Client notes (made through a share link) carry guest_name and visibility 'client'.
+CREATE TABLE IF NOT EXISTS review_notes (
+    id               UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    project_id       UUID NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+    task_id          UUID NOT NULL REFERENCES tasks(id) ON DELETE CASCADE,
+    item_id          UUID NOT NULL REFERENCES review_items(id) ON DELETE CASCADE,
+    parent_id        UUID REFERENCES review_notes(id) ON DELETE CASCADE,
+    kind             TEXT NOT NULL DEFAULT 'comment' CHECK (kind IN ('comment','status','decision')),
+    body             TEXT NOT NULL DEFAULT '',
+    frame            INT,
+    frame_end        INT,
+    drawing          JSONB,
+    status           TEXT CHECK (status IN ('open','fixed','verified')),
+    fixed_in_item_id UUID REFERENCES review_items(id) ON DELETE SET NULL,
+    visibility       TEXT NOT NULL DEFAULT 'internal' CHECK (visibility IN ('internal','client')),
+    author_id        UUID REFERENCES users(id) ON DELETE SET NULL,
+    guest_name       TEXT,
+    share_id         UUID REFERENCES review_shares(id) ON DELETE SET NULL,
+    meta             JSONB NOT NULL DEFAULT '{}'::jsonb,
+    created_at       TIMESTAMPTZ DEFAULT NOW(),
+    updated_at       TIMESTAMPTZ DEFAULT NOW()
+);
+CREATE INDEX IF NOT EXISTS idx_review_notes_task ON review_notes(task_id, created_at);
+CREATE INDEX IF NOT EXISTS idx_review_notes_parent ON review_notes(parent_id);
+CREATE INDEX IF NOT EXISTS idx_review_notes_open ON review_notes(task_id) WHERE parent_id IS NULL AND status <> 'verified';
+
+-- 30. Review image sequences: one CAS blob per frame, so unchanged frames are stored once
+--     across revisions. ``frames`` lists {frame, content_id, size}; the source blob is a JSON
+--     manifest of the same list.
+ALTER TABLE review_items ADD COLUMN IF NOT EXISTS frames JSONB;
+DO $$
+BEGIN
+    IF EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'review_items_kind_check'
+               AND pg_get_constraintdef(oid) NOT LIKE '%sequence%') THEN
+        ALTER TABLE review_items DROP CONSTRAINT review_items_kind_check;
+    END IF;
+    IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'review_items_kind_check') THEN
+        ALTER TABLE review_items ADD CONSTRAINT review_items_kind_check
+            CHECK (kind IN ('video','image','sequence'));
+    END IF;
+END $$;
+
+-- 31. Per-studio storage workflow: whether chunked dedup is used, per file extension.
+--     Shape and defaults live in app/storage_policy.py; '{}' means "recommended defaults".
+ALTER TABLE organizations ADD COLUMN IF NOT EXISTS storage_policy JSONB NOT NULL DEFAULT '{}'::jsonb;
+
+-- 32. Last storage integrity check per studio (report JSON; see app/storage_check).
+ALTER TABLE organizations ADD COLUMN IF NOT EXISTS last_storage_check JSONB;

@@ -5,6 +5,7 @@ from typing import Any, Optional
 
 import app.config as app_config
 from app.settings.store import get_global_settings
+from app.tenancy import settings_key
 
 
 def resolve_dcc_executable_path(dcc: str, dcc_label: Optional[str]) -> Optional[str]:
@@ -14,7 +15,7 @@ def resolve_dcc_executable_path(dcc: str, dcc_label: Optional[str]) -> Optional[
     """
     env = app_config.APP_ENV if app_config.APP_ENV in ("production", "staging", "development") else "development"
     try:
-        doc = get_global_settings(env)
+        doc = get_global_settings(settings_key(env))
     except Exception:
         return None
 

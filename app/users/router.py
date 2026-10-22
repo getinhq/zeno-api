@@ -16,6 +16,12 @@ from fastapi import APIRouter, Body, Depends, HTTPException, Query
 from app.auth import service as auth_service
 from app.auth.deps import CurrentUser, require_current_user, require_role
 from app.db import acquire
+from app.tenancy import (
+    current_org_id,
+    default_org_id_for_unscoped,
+    ensure_in_scope,
+    org_filter_sql,
+)
 
 router = APIRouter(prefix="/api/v1/users", tags=["users"])
 
@@ -47,6 +53,9 @@ async def list_users(
     if is_active is not None:
         conds.append(f"is_active = ${len(params) + 1}")
         params.append(is_active)
+    org_sql, org_params = org_filter_sql("organization_id", len(params) + 1)
+    conds.append(org_sql)
+    params.extend(org_params)
     where = (" WHERE " + " AND ".join(conds)) if conds else ""
     async with acquire() as conn:
         rows = await conn.fetch(
@@ -64,6 +73,7 @@ async def list_users(
 @router.get("/{user_id}")
 async def get_user(user_id: UUID, _user: CurrentUser = Depends(require_current_user)) -> dict:
     async with acquire() as conn:
+        await ensure_in_scope(conn, "user", user_id)
         row = await conn.fetchrow(
             """
             SELECT id, email, username, name, role, app_role, department, is_active
@@ -101,11 +111,13 @@ async def create_user(
 
     pw_hash = auth_service.hash_password(password)
     async with acquire() as conn:
+        org_id = current_org_id() or await default_org_id_for_unscoped(conn)
         try:
             row = await conn.fetchrow(
                 """
-                INSERT INTO users (email, username, password_hash, name, role, app_role, department, is_active)
-                VALUES ($1, $2, $3, $4, $5, $6, $7, TRUE)
+                INSERT INTO users (email, username, password_hash, name, role, app_role, department,
+                                   is_active, organization_id)
+                VALUES ($1, $2, $3, $4, $5, $6, $7, TRUE, $8)
                 RETURNING id, email, username, name, role, app_role, department, is_active
                 """,
                 email,
@@ -115,6 +127,7 @@ async def create_user(
                 legacy_role,
                 app_role,
                 department,
+                org_id,
             )
         except asyncpg.UniqueViolationError as exc:
             raise HTTPException(status_code=409, detail=str(exc)) from exc
@@ -148,6 +161,7 @@ async def update_user(
         + " RETURNING id, email, username, name, role, app_role, department, is_active"
     )
     async with acquire() as conn:
+        await ensure_in_scope(conn, "user", user_id)
         try:
             row = await conn.fetchrow(query, *params)
         except asyncpg.UniqueViolationError as exc:

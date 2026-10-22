@@ -6,6 +6,7 @@ from datetime import datetime, timezone
 from typing import Any, Optional
 
 from app.redis_conn import get_redis
+from app.tenancy import lock_namespace
 
 
 def _decode_lock_value(raw: Any) -> Optional[dict[str, Any]]:
@@ -42,7 +43,7 @@ class LockNotFound(Exception):
 
 
 def _lock_key(project: str, asset: str, representation: str) -> str:
-    return f"lock:{project}:{asset}:{representation}"
+    return f"lock:{lock_namespace()}{project}:{asset}:{representation}"
 
 
 async def acquire_lock(

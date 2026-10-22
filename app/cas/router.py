@@ -17,6 +17,13 @@ from app.cas.paths import is_valid_hash
 router = APIRouter(prefix="/api/v1/cas", tags=["cas"])
 
 
+async def _remember(hash_str: str) -> None:
+    try:
+        await set_cached_exists(hash_str, True)
+    except Exception:
+        pass  # the cache is an optimisation; storage is the source of truth
+
+
 def _validate_hash(hash_str: str) -> None:
     if not is_valid_hash(hash_str):
         raise HTTPException(status_code=400, detail="Invalid hash: must be 64 lowercase hex characters")
@@ -52,6 +59,7 @@ async def post_blob(request: Request) -> Response:
                 detail=f"Content hash mismatch: expected {hash_str[:16]}..., got {computed[:16]}...",
             )
         created = backend.put_from_path(hash_str, Path(tmp_path))
+        await _remember(hash_str)
         return Response(status_code=201 if created else 200)
     except HTTPException:
         raise
@@ -119,6 +127,7 @@ async def put_blob(hash_str: str, request: Request) -> Response:
                 content=f"Content hash mismatch: expected {hash_str[:16]}..., got {computed[:16]}...",
             )
         created = backend.put_from_path(hash_str, Path(tmp_path))
+        await _remember(hash_str)
         return Response(status_code=201 if created else 200)
     except Exception:
         if os.path.exists(tmp_path):

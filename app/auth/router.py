@@ -8,15 +8,19 @@ refusing all logouts — the token will still expire naturally.
 from __future__ import annotations
 
 import logging
+from datetime import timedelta
 from typing import Any, Optional
 from uuid import UUID
 
 import jwt
 from fastapi import APIRouter, Body, Depends, HTTPException, status
 
+import app.config as app_config
 from app.auth import service as auth_service
+from app.auth import tokens
 from app.auth.deps import CurrentUser, get_current_user
 from app.db import acquire
+from app.organizations.service import create_organization_with_owner, organization_payload
 from app.redis_conn import get_redis
 
 log = logging.getLogger(__name__)
@@ -44,48 +48,86 @@ async def _blacklist(jti: str, ttl_seconds: int) -> None:
         log.warning("auth.blacklist redis unavailable: %s", exc)
 
 
+_USER_SELECT = """
+    SELECT u.id, u.email, u.username, u.password_hash, u.name, u.role, u.app_role,
+           u.department, u.is_active,
+           o.id AS org_id, o.name AS org_name, o.slug AS org_slug
+    FROM users u
+    LEFT JOIN organizations o ON o.id = u.organization_id
+"""
+
+
+def _user_payload(row) -> dict:
+    return {
+        "id": str(row["id"]),
+        "username": row["username"],
+        "email": row["email"],
+        "name": row["name"],
+        "role": row["role"],
+        "app_role": row["app_role"],
+        "department": row["department"],
+        "organization": organization_payload(row),
+    }
+
+
+def _token_response(row) -> dict:
+    access, _ = auth_service.issue_access_token(row["id"], row["username"], row["app_role"])
+    refresh, _, _ = auth_service.issue_refresh_token(row["id"])
+    return {
+        "access_token": access,
+        "refresh_token": refresh,
+        "token_type": "bearer",
+        "user": _user_payload(row),
+    }
+
+
+@router.get("/config")
+async def auth_config() -> dict:
+    """Public: lets the login screen know whether self-service signup is open."""
+    return {"signup_enabled": app_config.ALLOW_SIGNUP, "auth_enabled": app_config.ENABLE_AUTH}
+
+
 @router.post("/login")
 async def login(body: dict = Body(...)) -> dict:
-    """Exchange username + password for an access + refresh token pair."""
-    username = (body.get("username") or "").strip()
+    """Exchange username (or email) + password for an access + refresh token pair."""
+    identifier = (body.get("username") or body.get("email") or "").strip()
     password = body.get("password") or ""
-    if not username or not password:
+    if not identifier or not password:
         raise HTTPException(status_code=400, detail="username and password are required")
 
     async with acquire() as conn:
         row = await conn.fetchrow(
-            """
-            SELECT id, email, username, password_hash, name, role, app_role, is_active
-            FROM users
-            WHERE username = $1
-            LIMIT 1
-            """,
-            username,
+            _USER_SELECT + " WHERE u.username = $1 OR lower(u.email) = lower($1) LIMIT 1",
+            identifier,
         )
 
     if not row or not row["is_active"]:
         raise HTTPException(status_code=401, detail="Invalid credentials")
     if not auth_service.verify_password(password, row["password_hash"] or ""):
         raise HTTPException(status_code=401, detail="Invalid credentials")
+    return _token_response(row)
 
-    access, _ = auth_service.issue_access_token(
-        row["id"], row["username"], row["app_role"]
-    )
-    refresh, _, _ = auth_service.issue_refresh_token(row["id"])
 
-    return {
-        "access_token": access,
-        "refresh_token": refresh,
-        "token_type": "bearer",
-        "user": {
-            "id": str(row["id"]),
-            "username": row["username"],
-            "email": row["email"],
-            "name": row["name"],
-            "role": row["role"],
-            "app_role": row["app_role"],
-        },
-    }
+@router.post("/signup", status_code=201)
+async def signup(body: dict = Body(...)) -> dict:
+    """
+    Self-service signup: creates a new organization (studio) and its first user, who
+    becomes the org admin (``pipeline`` role). Disabled when ZENO_ALLOW_SIGNUP=false.
+    """
+    if not app_config.ALLOW_SIGNUP:
+        raise HTTPException(status_code=403, detail="Signup is disabled on this server")
+    async with acquire() as conn:
+        async with conn.transaction():
+            _org, user = await create_organization_with_owner(
+                conn,
+                studio_name=body.get("studio_name") or "",
+                email=body.get("email") or "",
+                password=body.get("password") or "",
+                name=body.get("name"),
+                username=body.get("username"),
+            )
+        row = await conn.fetchrow(_USER_SELECT + " WHERE u.id = $1", user["id"])
+    return _token_response(row)
 
 
 @router.post("/refresh")
@@ -150,22 +192,57 @@ async def logout(body: dict = Body(default_factory=dict)) -> dict:
 @router.get("/me")
 async def me(user: CurrentUser = Depends(get_current_user)) -> dict:
     async with acquire() as conn:
-        row = await conn.fetchrow(
-            """
-            SELECT id, email, username, name, role, app_role, is_active, department
-            FROM users
-            WHERE id = $1
-            """,
-            user.id,
-        )
+        row = await conn.fetchrow(_USER_SELECT + " WHERE u.id = $1", user.id)
     if not row or not row["is_active"]:
         raise HTTPException(status_code=401, detail="User is inactive")
-    return {
-        "id": str(row["id"]),
-        "username": row["username"],
-        "email": row["email"],
-        "name": row["name"],
-        "role": row["role"],
-        "app_role": row["app_role"],
-        "department": row["department"],
-    }
+    return _user_payload(row)
+
+
+# --- Personal access tokens -----------------------------------------------------------
+
+
+@router.get("/tokens")
+async def list_tokens(user: CurrentUser = Depends(get_current_user)) -> list[dict]:
+    async with acquire() as conn:
+        rows = await conn.fetch(
+            "SELECT id, name, prefix, expires_at, last_used_at, revoked_at, created_at FROM api_tokens"
+            " WHERE user_id = $1 AND revoked_at IS NULL AND (expires_at IS NULL OR expires_at > NOW())"
+            " AND name <> 'Open in DCC' ORDER BY created_at DESC",
+            user.id,
+        )
+    return [tokens.serialize(r) for r in rows]
+
+
+@router.post("/tokens", status_code=201)
+async def create_token(body: dict = Body(...), user: CurrentUser = Depends(get_current_user)) -> dict:
+    """Create a token for a DCC add-on or script. The token is returned only once."""
+    name = (body.get("name") or "").strip()[:80]
+    if not name:
+        raise HTTPException(status_code=400, detail="name is required")
+    days = body.get("expires_in_days")
+    ttl = None
+    if days not in (None, "", 0):
+        try:
+            ttl = timedelta(days=int(days))
+        except (TypeError, ValueError):
+            raise HTTPException(status_code=400, detail="expires_in_days must be a number") from None
+        if not 1 <= ttl.days <= 3650:
+            raise HTTPException(status_code=400, detail="expires_in_days must be 1-3650")
+    async with acquire() as conn:
+        token, row = await tokens.create(conn, user.id, name, ttl)
+    return {**tokens.serialize(row), "token": token}
+
+
+@router.delete("/tokens/{token_id}")
+async def revoke_token(token_id: UUID, user: CurrentUser = Depends(get_current_user)) -> dict:
+    async with acquire() as conn:
+        done = await conn.fetchval(
+            "UPDATE api_tokens SET revoked_at = NOW() WHERE id = $1 AND user_id = $2 AND revoked_at IS NULL"
+            " RETURNING id",
+            token_id,
+            user.id,
+        )
+    if not done:
+        raise HTTPException(status_code=404, detail="Token not found")
+    return {"revoked": str(done)}
+

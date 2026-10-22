@@ -19,12 +19,26 @@ from fastapi import Depends, Header, HTTPException, status
 from app.auth import service as auth_service
 
 
+# Stand-in identity used when ENABLE_AUTH is off and the caller sent no token.
+# It has no ``users`` row, so it must never be written to a user foreign key.
+ANONYMOUS_USER_ID = UUID(int=0)
+
+
 @dataclass
 class CurrentUser:
     id: UUID
     username: str
     app_role: Optional[str]
     jti: str
+
+    @property
+    def is_anonymous(self) -> bool:
+        return self.id == ANONYMOUS_USER_ID
+
+    @property
+    def db_id(self) -> Optional[UUID]:
+        """User id safe to store in a ``users(id)`` foreign key (None when anonymous)."""
+        return None if self.is_anonymous else self.id
 
 
 def _parse_bearer(authorization: Optional[str]) -> str:
@@ -48,8 +62,22 @@ def _decode_access(token: str) -> dict:
     return payload
 
 
+async def _user_from_pat(token: str) -> CurrentUser:
+    from app.auth import tokens as pat
+    from app.db import acquire
+
+    async with acquire() as conn:
+        row = await pat.lookup(conn, token)
+    if row is None:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid or expired API token")
+    return CurrentUser(id=row["id"], username=row["username"] or "", app_role=row["app_role"], jti="")
+
+
 async def get_current_user(authorization: Optional[str] = Header(default=None)) -> CurrentUser:
     token = _parse_bearer(authorization)
+    if token.startswith("zeno_pat_"):
+        # Personal access token (DCC plugins, scripts) instead of a session JWT.
+        return await _user_from_pat(token)
     payload = _decode_access(token)
     try:
         uid = UUID(str(payload.get("sub")))
@@ -90,7 +118,7 @@ def require_role(*roles: str):
             user = await optional_current_user(authorization=authorization)
             if user is None:
                 return CurrentUser(
-                    id=UUID("00000000-0000-0000-0000-000000000000"),
+                    id=ANONYMOUS_USER_ID,
                     username="__anonymous__",
                     app_role=next(iter(allowed)),
                     jti="",
@@ -129,7 +157,7 @@ async def require_current_user(
         user = await optional_current_user(authorization=authorization)
         if user is None:
             return CurrentUser(
-                id=UUID("00000000-0000-0000-0000-000000000000"),
+                id=ANONYMOUS_USER_ID,
                 username="__anonymous__",
                 app_role="pipeline",
                 jti="",

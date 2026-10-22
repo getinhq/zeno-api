@@ -7,6 +7,7 @@ from datetime import datetime, timezone
 from typing import Any, Optional
 
 from app.redis_conn import get_redis
+from app.tenancy import lock_namespace
 
 
 class PresenceUnavailable(Exception):
@@ -21,15 +22,15 @@ class AssetRef:
 
 
 def _presence_key(user_id: str, session_id: str) -> str:
-    return f"presence:{user_id}:{session_id}"
+    return f"presence:{lock_namespace()}{user_id}:{session_id}"
 
 
 def _presence_index_key(user_id: str) -> str:
-    return f"presence_index:{user_id}"
+    return f"presence_index:{lock_namespace()}{user_id}"
 
 
 def _asset_presence_key(ref: AssetRef) -> str:
-    return f"asset_presence:{ref.project}:{ref.asset}:{ref.representation}"
+    return f"asset_presence:{lock_namespace()}{ref.project}:{ref.asset}:{ref.representation}"
 
 
 async def heartbeat(

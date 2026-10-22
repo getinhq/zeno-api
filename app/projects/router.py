@@ -8,9 +8,15 @@ from uuid import UUID
 import asyncpg
 from fastapi import APIRouter, Body, Depends, HTTPException, Query
 
-from app.auth.deps import optional_current_user
+from app.auth.deps import MANAGEMENT_ROLES, optional_current_user, require_role
 from app.db import acquire
 from app.events import log as events_log
+from app.tenancy import (
+    current_org_id,
+    default_org_id_for_unscoped,
+    ensure_in_scope,
+    org_filter_sql,
+)
 
 router = APIRouter(prefix="/api/v1/projects", tags=["projects"])
 
@@ -68,6 +74,9 @@ async def list_projects(
     if code:
         conditions.append(f"code = ${len(params) + 1}")
         params.append(code)
+    org_sql, org_params = org_filter_sql("organization_id", len(params) + 1)
+    conditions.append(org_sql)
+    params.extend(org_params)
     if conditions:
         query += " WHERE " + " AND ".join(conditions)
     query += " ORDER BY name"
@@ -90,6 +99,7 @@ async def list_projects(
 async def get_project(project_id: UUID) -> dict:
     """Get one project by id."""
     async with acquire() as conn:
+        await ensure_in_scope(conn, "project", project_id)
         row = await conn.fetchrow(
             """
             SELECT id, name, code, status, start_date, end_date, metadata, created_at, updated_at
@@ -114,7 +124,10 @@ async def get_project(project_id: UUID) -> dict:
 
 
 @router.post("")
-async def create_project(body: dict = Body(...)) -> dict:
+async def create_project(
+    body: dict = Body(...),
+    _user=Depends(require_role(*MANAGEMENT_ROLES)),
+) -> dict:
     """Create a project. Expects JSON: name, code; optional: status, start_date, end_date, metadata."""
     name = body.get("name")
     code = body.get("code")
@@ -126,11 +139,13 @@ async def create_project(body: dict = Body(...)) -> dict:
     metadata = body.get("metadata") or {}
 
     async with acquire() as conn:
+        org_id = current_org_id() or await default_org_id_for_unscoped(conn)
         try:
             row = await conn.fetchrow(
                 """
-                INSERT INTO projects (name, code, status, start_date, end_date, metadata)
-                VALUES ($1, $2, $3, $4::date, $5::date, $6::jsonb)
+                INSERT INTO projects (name, code, status, start_date, end_date, metadata,
+                                      organization_id)
+                VALUES ($1, $2, $3, $4::date, $5::date, $6::jsonb, $7)
                 RETURNING id, name, code, status, created_at
                 """,
                 name,
@@ -139,9 +154,12 @@ async def create_project(body: dict = Body(...)) -> dict:
                 start_date,
                 end_date,
                 json.dumps(metadata) if metadata else "{}",
+                org_id,
             )
         except asyncpg.UniqueViolationError as e:
-            raise HTTPException(status_code=409, detail=str(e)) from e
+            raise HTTPException(
+                status_code=409, detail="A project with this name or code already exists"
+            ) from e
 
     return {
         "id": str(row["id"]),
@@ -188,6 +206,7 @@ async def update_project(
     )
 
     async with acquire() as conn:
+        await ensure_in_scope(conn, "project", project_id)
         previous = await conn.fetchval("SELECT status FROM projects WHERE id = $1", project_id)
         try:
             row = await conn.fetchrow(query, *params)
@@ -221,9 +240,13 @@ async def update_project(
 
 
 @router.delete("/{project_id}")
-async def delete_project(project_id: UUID) -> dict:
+async def delete_project(
+    project_id: UUID,
+    _user=Depends(require_role(*MANAGEMENT_ROLES)),
+) -> dict:
     """Soft-delete a project by setting status='archived'."""
     async with acquire() as conn:
+        await ensure_in_scope(conn, "project", project_id)
         row = await conn.fetchrow(
             """
             UPDATE projects

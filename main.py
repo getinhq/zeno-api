@@ -1,47 +1,70 @@
 """Zeno API entrypoint."""
 from contextlib import asynccontextmanager
 
-from fastapi import FastAPI
+from fastapi import Depends, FastAPI
 
 import app.config as app_config
 from app.auth.router import router as auth_router
 from app.cas.router import router as cas_router
+from app.casting.router import router as casting_router
 from app.db import close_pool, get_pool
 from app.events.router import router as events_router
 from app.health import run_health_checks
+from app.invites.router import router as invites_router
 from app.issues.router import router as issues_router
 from app.notifications.router import router as notifications_router
+from app.organizations.router import router as organization_router
 from app.redis_conn import close_redis
 from app.users.router import router as users_router
 from app.workflow.locks_router import router as locks_router
 from app.launch.router import router as launch_router
 from app.workflow.presence_router import router as presence_router
 from app.versions.router import router as versions_router
+from app.project_templates.router import router as project_templates_router
 from app.projects.router import router as projects_router
 from app.episodes.router import router as episodes_router
 from app.sequences.router import router as sequences_router
 from app.assets.router import router as assets_router
 from app.shots.router import router as shots_router
+from app.task_templates.router import router as task_templates_router
 from app.tasks.router import router as tasks_router
 from app.resolver.router import router as resolver_router
+from app.reviews import processing as review_processing
+from app.reviews.media_urls import router as review_media_router
+from app.reviews.router import router as reviews_router
+from app.reviews.shares import public_router as review_shares_public_router
+from app.reviews.shares import router as review_shares_router
+from app.schedule.router import router as schedule_router
+from app.storage_policy.router import router as storage_policy_router
+from app.storage_check.router import router as storage_check_router
 from app.settings.router import router as settings_router
 from app.manifests.store import ensure_manifest_indexes
 from app.settings.store import ensure_settings_indexes
+from app.tenancy import bind_request_identity
 
 
 def _validate_runtime_config() -> None:
     """
-    Fail fast in production-like environments when CAS is not MinIO/S3-backed
-    or when the JWT secret is missing.
+    Fail fast in production-like environments when the deployment would be unsafe:
+    a multi-tenant server must authenticate every request and sign tokens with a real
+    secret, and CAS needs somewhere durable to live (S3/MinIO or a local/NAS directory).
     """
     env = app_config.APP_ENV
     if env in ("production", "staging"):
-        if app_config.CAS_STORAGE_BACKEND != "s3":
-            raise RuntimeError("CAS_STORAGE_BACKEND must be 's3' in production/staging")
-        if not (app_config.S3_ENDPOINT_URL and app_config.S3_ACCESS_KEY and app_config.S3_SECRET_KEY):
-            raise RuntimeError("S3_ENDPOINT_URL, S3_ACCESS_KEY, and S3_SECRET_KEY are required in production/staging")
-        if app_config.ENABLE_AUTH and not app_config.ZENO_JWT_SECRET:
-            raise RuntimeError("ZENO_JWT_SECRET must be set when ENABLE_AUTH=true in production/staging")
+        if not app_config.ENABLE_AUTH:
+            raise RuntimeError("ENABLE_AUTH must be true in production/staging (studios share this server)")
+        if not app_config.ZENO_JWT_SECRET or len(app_config.ZENO_JWT_SECRET) < 32:
+            raise RuntimeError("ZENO_JWT_SECRET must be set (32+ characters) in production/staging")
+        backend = app_config.CAS_STORAGE_BACKEND
+        s3_ready = bool(app_config.S3_ENDPOINT_URL and app_config.S3_ACCESS_KEY and app_config.S3_SECRET_KEY)
+        if backend == "s3" and not s3_ready:
+            raise RuntimeError("CAS_STORAGE_BACKEND=s3 needs S3_ENDPOINT_URL, S3_ACCESS_KEY and S3_SECRET_KEY")
+        if backend == "nas" and not app_config.CAS_ROOT:
+            raise RuntimeError("CAS_STORAGE_BACKEND=nas needs ZENO_CAS_ROOT")
+        if backend == "auto" and not (s3_ready or app_config.CAS_ROOT):
+            raise RuntimeError("Configure CAS storage: S3_* for S3/MinIO, or ZENO_CAS_ROOT for local disk")
+        if app_config.PUBLIC_APP_URL.startswith("http://localhost"):
+            raise RuntimeError("ZENO_PUBLIC_APP_URL must be the public dashboard URL (used in invite links)")
 
 
 @asynccontextmanager
@@ -55,15 +78,26 @@ async def lifespan(app: FastAPI):
             pass
     if app_config.DATABASE_URL:
         await get_pool()
+        try:
+            await review_processing.resume_pending()
+        except Exception:
+            pass
     yield
     await close_pool()
     await close_redis()
 
 
-app = FastAPI(title="Zeno API", version="0.1.0", lifespan=lifespan)
+app = FastAPI(
+    title="Zeno API",
+    version="0.1.0",
+    lifespan=lifespan,
+    # Authenticates (when ENABLE_AUTH) and binds the caller's organization for every route.
+    dependencies=[Depends(bind_request_identity)],
+)
 
 app.include_router(auth_router)
 app.include_router(cas_router)
+app.include_router(project_templates_router)
 app.include_router(projects_router)
 app.include_router(episodes_router)
 app.include_router(sequences_router)
@@ -80,6 +114,17 @@ app.include_router(users_router)
 app.include_router(issues_router)
 app.include_router(notifications_router)
 app.include_router(events_router)
+app.include_router(organization_router)
+app.include_router(invites_router)
+app.include_router(task_templates_router)
+app.include_router(casting_router)
+app.include_router(schedule_router)
+app.include_router(review_shares_router)
+app.include_router(review_shares_public_router)
+app.include_router(reviews_router)
+app.include_router(review_media_router)
+app.include_router(storage_policy_router)
+app.include_router(storage_check_router)
 
 
 @app.get("/")

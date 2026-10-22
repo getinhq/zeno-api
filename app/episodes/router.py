@@ -9,6 +9,7 @@ import asyncpg
 from fastapi import APIRouter, Body, HTTPException, Path, Query
 
 from app.db import acquire
+from app.tenancy import ensure_in_scope
 
 router = APIRouter(prefix="/api/v1", tags=["episodes"])
 
@@ -49,6 +50,7 @@ async def list_episodes_for_project(
     query += " ORDER BY episode_number, code"
 
     async with acquire() as conn:
+        await ensure_in_scope(conn, "project", project_id)
         rows = await conn.fetch(query, *params)
     return [
         {
@@ -71,6 +73,7 @@ async def list_episodes_for_project(
 async def get_episode(episode_id: UUID = Path(...)) -> dict:
     """Get one episode by id."""
     async with acquire() as conn:
+        await ensure_in_scope(conn, "episode", episode_id)
         row = await conn.fetchrow(
             """
             SELECT id, project_id, episode_number, title, code, status, air_date, metadata, created_at, updated_at
@@ -110,6 +113,7 @@ async def create_episode(project_id: UUID, body: dict = Body(...)) -> dict:
     metadata = body.get("metadata") or {}
 
     async with acquire() as conn:
+        await ensure_in_scope(conn, "project", project_id)
         try:
             row = await conn.fetchrow(
                 """
@@ -173,6 +177,7 @@ async def update_episode(episode_id: UUID, body: dict = Body(...)) -> dict:
         + " RETURNING id, project_id, episode_number, title, code, status, air_date, metadata, created_at, updated_at"
     )
     async with acquire() as conn:
+        await ensure_in_scope(conn, "episode", episode_id)
         try:
             row = await conn.fetchrow(query, *params)
         except asyncpg.UniqueViolationError:

@@ -5,6 +5,7 @@ from typing import Any, Dict, Optional, Union
 from uuid import UUID
 
 from app.db import acquire
+from app.tenancy import current_org_id
 from app.resolver.uri_parser import is_uuid
 
 
@@ -26,9 +27,17 @@ async def resolve(
                 project_id = UUID(project_spec)
             except ValueError:
                 return None
-            row = await conn.fetchrow("SELECT id FROM projects WHERE id = $1", project_id)
+            row = await conn.fetchrow(
+                "SELECT id FROM projects WHERE id = $1 AND ($2::uuid IS NULL OR organization_id = $2)",
+                project_id,
+                current_org_id(),
+            )
         else:
-            row = await conn.fetchrow("SELECT id FROM projects WHERE code = $1", project_spec)
+            row = await conn.fetchrow(
+                "SELECT id FROM projects WHERE code = $1 AND ($2::uuid IS NULL OR organization_id = $2)",
+                project_spec,
+                current_org_id(),
+            )
         if not row:
             return None
         project_id = row["id"]
