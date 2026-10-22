@@ -253,9 +253,19 @@ async def list_my_tasks(
     reviewer, or collaborator). When auth is disabled, returns every task for
     the project — matches legacy dev behaviour.
     """
-    if not current or not current.id:
+    if not current or current.is_anonymous:
         # Auth disabled or anonymous — fall back to unfiltered list so dev setups still work.
-        return await list_tasks(project_id=project_id)
+        # Pass every filter explicitly: calling the route function directly would otherwise
+        # hand it FastAPI ``Query(None)`` objects instead of None.
+        return await list_tasks(
+            project_id=project_id,
+            asset_id=None,
+            shot_id=None,
+            type=None,
+            status=None,
+            assignee_id=None,
+            department=None,
+        )
 
     params: list[Any] = [current.id]
     conditions = [

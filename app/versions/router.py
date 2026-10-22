@@ -281,7 +281,7 @@ async def register_version_endpoint(
                 await _set_task_status_for_publish(
                     conn,
                     task_id=task_uuid,
-                    actor_id=getattr(current, "id", None),
+                    actor_id=getattr(current, "db_id", None),
                 )
             payload = {
                 "version_id": result.version_id,
@@ -447,7 +447,7 @@ async def update_version(
                     """,
                     version_id,
                 ),
-                actor_id=getattr(current, "id", None),
+                actor_id=getattr(current, "db_id", None),
                 kind="version.updated",
                 payload={
                     "version_id": str(version_id),
@@ -460,7 +460,7 @@ async def update_version(
             await _sync_task_status_from_latest_version(
                 conn,
                 task_id=row["task_id"],
-                actor_id=getattr(current, "id", None),
+                actor_id=getattr(current, "db_id", None),
             )
     if not row:
         raise HTTPException(status_code=404, detail="Version not found")

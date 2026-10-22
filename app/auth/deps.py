@@ -19,12 +19,26 @@ from fastapi import Depends, Header, HTTPException, status
 from app.auth import service as auth_service
 
 
+# Stand-in identity used when ENABLE_AUTH is off and the caller sent no token.
+# It has no ``users`` row, so it must never be written to a user foreign key.
+ANONYMOUS_USER_ID = UUID(int=0)
+
+
 @dataclass
 class CurrentUser:
     id: UUID
     username: str
     app_role: Optional[str]
     jti: str
+
+    @property
+    def is_anonymous(self) -> bool:
+        return self.id == ANONYMOUS_USER_ID
+
+    @property
+    def db_id(self) -> Optional[UUID]:
+        """User id safe to store in a ``users(id)`` foreign key (None when anonymous)."""
+        return None if self.is_anonymous else self.id
 
 
 def _parse_bearer(authorization: Optional[str]) -> str:
@@ -90,7 +104,7 @@ def require_role(*roles: str):
             user = await optional_current_user(authorization=authorization)
             if user is None:
                 return CurrentUser(
-                    id=UUID("00000000-0000-0000-0000-000000000000"),
+                    id=ANONYMOUS_USER_ID,
                     username="__anonymous__",
                     app_role=next(iter(allowed)),
                     jti="",
@@ -129,7 +143,7 @@ async def require_current_user(
         user = await optional_current_user(authorization=authorization)
         if user is None:
             return CurrentUser(
-                id=UUID("00000000-0000-0000-0000-000000000000"),
+                id=ANONYMOUS_USER_ID,
                 username="__anonymous__",
                 app_role="pipeline",
                 jti="",

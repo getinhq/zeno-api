@@ -221,6 +221,15 @@ async def get_issue(
     return data
 
 
+def _fk_error_detail(exc: asyncpg.ForeignKeyViolationError) -> str:
+    """Name the offending field instead of a generic 'something is invalid'."""
+    constraint = getattr(exc, "constraint_name", "") or ""
+    for field in ("project_id", "reporter_id", "assignee_id", "asset_id", "shot_id"):
+        if field in constraint:
+            return f"{field} does not reference an existing row"
+    return "project_id/asset_id/shot_id/assignee_id/reporter_id invalid"
+
+
 @router.post("")
 async def create_issue(
     body: dict = Body(...), user: CurrentUser = Depends(require_current_user)
@@ -266,7 +275,7 @@ async def create_issue(
     status = _normalize_status(body.get("status", "not_started"))
     if status not in _ISSUE_STATUSES:
         raise HTTPException(status_code=400, detail=f"status must be one of {_ISSUE_STATUSES}")
-    reporter_id = body.get("reporter_id") or user.id
+    reporter_id = body.get("reporter_id") or user.db_id
     assignee_id = body.get("assignee_id")
     asset_id = body.get("asset_id")
     shot_id = body.get("shot_id")
@@ -290,8 +299,14 @@ async def create_issue(
             asset_id = str(aid)
     if not shot_id and shot_code:
         async with acquire() as conn:
+            # shots have no project_id; scope through sequence -> episode.
             sid = await conn.fetchval(
-                "SELECT id FROM shots WHERE project_id = $1 AND shot_code = $2",
+                """
+                SELECT s.id FROM shots s
+                JOIN sequences seq ON seq.id = s.sequence_id
+                JOIN episodes e    ON e.id   = seq.episode_id
+                WHERE e.project_id = $1 AND s.shot_code = $2
+                """,
                 project_id,
                 shot_code,
             )
@@ -319,15 +334,13 @@ async def create_issue(
                 json.dumps(metadata),
             )
         except asyncpg.ForeignKeyViolationError as exc:
-            raise HTTPException(
-                status_code=400, detail="project_id/asset_id/shot_id/assignee_id invalid"
-            ) from exc
+            raise HTTPException(status_code=400, detail=_fk_error_detail(exc)) from exc
         row = await conn.fetchrow(_ISSUE_LIST_SELECT + " WHERE i.id = $1", inserted["id"])
 
         await emit_event(
             conn,
             project_id=row["project_id"],
-            actor_id=user.id if user.id else None,
+            actor_id=user.db_id,
             kind="issue.created",
             payload={
                 "issue_id": str(row["id"]),
@@ -392,7 +405,7 @@ async def update_issue(
         await emit_event(
             conn,
             project_id=row["project_id"],
-            actor_id=user.id,
+            actor_id=user.db_id,
             kind="issue.updated",
             payload={"issue_id": str(row["id"]), "status": row["status"]},
         )
@@ -434,7 +447,7 @@ async def attach_media(
                 filename,
                 mime_type,
                 size_bytes,
-                user.id,
+                user.db_id,
             )
         except asyncpg.ForeignKeyViolationError as exc:
             raise HTTPException(status_code=404, detail="Issue not found") from exc
@@ -527,7 +540,7 @@ async def upload_attachment(
             resolved_name,
             mime_type,
             written,
-            user.id,
+            user.db_id,
         )
     return _serialize_attachment(row)
 
