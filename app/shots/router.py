@@ -9,6 +9,7 @@ import asyncpg
 from fastapi import APIRouter, Body, HTTPException, Path, Query
 
 from app.db import acquire
+from app.task_templates.service import apply_default_for_shot
 from app.tenancy import ensure_in_scope
 
 router = APIRouter(prefix="/api/v1", tags=["shots"])
@@ -195,7 +196,7 @@ async def create_shot(sequence_id: UUID, body: dict = Body(...)) -> dict:
     if stage not in ALLOWED_STAGES:
         raise HTTPException(status_code=400, detail=f"stage must be one of: {', '.join(ALLOWED_STAGES)}")
 
-    async with acquire() as conn:
+    async with acquire() as conn, conn.transaction():
         await ensure_in_scope(conn, "sequence", sequence_id)
         try:
             row = await conn.fetchrow(
@@ -225,8 +226,13 @@ async def create_shot(sequence_id: UUID, body: dict = Body(...)) -> dict:
                 status_code=409,
                 detail="shot_code must be unique per sequence",
             )
+        # New shots get their tasks from the studio's default shot template.
+        tasks_created = 0
+        if body.get("apply_template", True):
+            tasks_created = await apply_default_for_shot(conn, row)
 
     return {
+        "tasks_created": tasks_created,
         "id": str(row["id"]),
         "sequence_id": str(row["sequence_id"]),
         "shot_code": row["shot_code"],

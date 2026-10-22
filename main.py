@@ -24,6 +24,7 @@ from app.episodes.router import router as episodes_router
 from app.sequences.router import router as sequences_router
 from app.assets.router import router as assets_router
 from app.shots.router import router as shots_router
+from app.task_templates.router import router as task_templates_router
 from app.tasks.router import router as tasks_router
 from app.resolver.router import router as resolver_router
 from app.settings.router import router as settings_router
@@ -91,6 +92,7 @@ app.include_router(notifications_router)
 app.include_router(events_router)
 app.include_router(organization_router)
 app.include_router(invites_router)
+app.include_router(task_templates_router)
 
 
 @app.get("/")

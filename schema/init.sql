@@ -598,3 +598,36 @@ CREATE TABLE IF NOT EXISTS invites (
     created_at       TIMESTAMPTZ DEFAULT NOW()
 );
 CREATE INDEX IF NOT EXISTS idx_invites_org ON invites(organization_id, created_at DESC);
+
+-- 20. Wider task vocabulary for small studios (concept, storyboard, lookdev, groom, cfx, edit).
+DO $$
+BEGIN
+    ALTER TABLE tasks DROP CONSTRAINT IF EXISTS tasks_type_check;
+    ALTER TABLE tasks ADD CONSTRAINT tasks_type_check CHECK (type IN (
+        'concept','storyboard','model','texture','rig','lookdev','groom','cfx',
+        'layout','animation','fx','lighting','render','comp','edit'));
+END $$;
+
+-- 21. Task templates: ordered steps that become tasks when an asset/shot is created.
+--     steps = [{"type": "rig", "title": "Rig", "duration_days": 5, "depends_on": [1]}, ...]
+--     depends_on holds indexes of earlier steps (used by the schedule as task dependencies).
+CREATE TABLE IF NOT EXISTS task_templates (
+    id               UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    organization_id  UUID NOT NULL REFERENCES organizations(id) ON DELETE CASCADE,
+    name             TEXT NOT NULL,
+    entity_kind      TEXT NOT NULL CHECK (entity_kind IN ('asset','shot')),
+    asset_type       TEXT,
+    is_default       BOOLEAN NOT NULL DEFAULT FALSE,
+    steps            JSONB NOT NULL DEFAULT '[]'::jsonb,
+    created_at       TIMESTAMPTZ DEFAULT NOW(),
+    updated_at       TIMESTAMPTZ DEFAULT NOW()
+);
+DROP TRIGGER IF EXISTS task_templates_timestamp ON task_templates;
+CREATE TRIGGER task_templates_timestamp
+    BEFORE UPDATE ON task_templates
+    FOR EACH ROW EXECUTE PROCEDURE update_timestamp();
+CREATE INDEX IF NOT EXISTS idx_task_templates_org ON task_templates(organization_id);
+-- At most one default per (org, kind, asset type).
+CREATE UNIQUE INDEX IF NOT EXISTS task_templates_one_default
+    ON task_templates (organization_id, entity_kind, COALESCE(asset_type, ''))
+    WHERE is_default;

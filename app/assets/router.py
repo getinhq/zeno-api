@@ -9,6 +9,7 @@ import asyncpg
 from fastapi import APIRouter, Body, HTTPException, Path, Query
 
 from app.db import acquire
+from app.task_templates.service import apply_default_for_asset
 from app.tenancy import ensure_in_scope
 
 router = APIRouter(prefix="/api/v1", tags=["assets"])
@@ -171,7 +172,7 @@ async def create_asset(project_id: UUID, body: dict = Body(...)) -> dict:
     else:
         pss = _status_from_legacy_stages(pipeline_stages)
 
-    async with acquire() as conn:
+    async with acquire() as conn, conn.transaction():
         await ensure_in_scope(conn, "project", project_id)
         try:
             row = await conn.fetchrow(
@@ -196,8 +197,12 @@ async def create_asset(project_id: UUID, body: dict = Body(...)) -> dict:
                 status_code=409,
                 detail="Asset code must be unique per project",
             ) from e
+        # New assets get their tasks from the studio's default template for the asset type.
+        tasks_created = 0
+        if body.get("apply_template", True):
+            tasks_created = await apply_default_for_asset(conn, row)
 
-    return _asset_row_dict(row)
+    return {**_asset_row_dict(row), "tasks_created": tasks_created}
 
 
 @router.patch("/assets/{asset_id}")
