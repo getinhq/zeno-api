@@ -928,7 +928,18 @@ async def update_note(
                 if old != new:
                     fixed_in = None
                     if new == "fixed":
-                        fixed_in = UUID(str(body["fixed_in_item_id"])) if body.get("fixed_in_item_id") else None
+                        fixed_in = None
+                        if body.get("fixed_in_item_id"):
+                            # DCCs name the revision they just submitted; it must be this task's.
+                            try:
+                                fixed_in = UUID(str(body["fixed_in_item_id"]))
+                            except ValueError:
+                                raise HTTPException(status_code=400, detail="fixed_in_item_id is not a review item id")
+                            same_task = await conn.fetchval(
+                                "SELECT 1 FROM review_items WHERE id = $1 AND task_id = $2", fixed_in, note["task_id"]
+                            )
+                            if not same_task:
+                                raise HTTPException(status_code=400, detail="fixed_in_item_id must be a revision of this note's task")
                         if fixed_in is None:
                             fixed_in = await conn.fetchval(
                                 "SELECT id FROM review_items WHERE task_id = $1 ORDER BY revision DESC LIMIT 1",
