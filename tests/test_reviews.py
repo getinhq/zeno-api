@@ -213,6 +213,40 @@ async def test_notes_follow_the_task_to_the_fix(client, tmp_path):
     assert (await client.patch(f"/api/v1/reviews/notes/{note_id}", json={"status": "open"}, headers=sup["headers"])).status_code == 200
 
 
+async def test_fix_recorded_against_the_revision_that_carries_it(client, tmp_path):
+    """Blender ticks notes while the artist works, then marks them fixed in the revision it submits."""
+    sup = await signup(client, "Alpha")
+    artist = await invite_and_accept(client, sup, role="artist")
+    p = await make_project(client, sup)
+    task = await _task(client, sup, p["id"])
+    siblings = (await client.get(f"/api/v1/tasks?asset_id={task['asset_id']}", headers=sup["headers"])).json()
+    other_task = next(t for t in siblings if t["id"] != task["id"])
+    await client.patch(f"/api/v1/tasks/{task['id']}", json={"assignee_id": artist["user"]["id"]}, headers=sup["headers"])
+
+    v1 = await _ready(client, artist, (await _submit(client, artist, task["id"], _clip(tmp_path / "a.mp4"))).json()["id"])
+    notes = []
+    for body in ("Key light too flat", "Shadow pops at the cut"):
+        r = await client.post(f"/api/v1/reviews/items/{v1['id']}/notes", json={"body": body, "frame": 3}, headers=sup["headers"])
+        notes.append(r.json()["id"])
+    v2 = await _ready(client, artist, (await _submit(client, artist, task["id"], _clip(tmp_path / "b.mp4"))).json()["id"])
+    v3 = await _ready(client, artist, (await _submit(client, artist, task["id"], _clip(tmp_path / "c.mp4"))).json()["id"])
+    elsewhere = await _ready(client, sup, (await _submit(client, sup, other_task["id"], _clip(tmp_path / "d.mp4"))).json()["id"])
+
+    url = f"/api/v1/reviews/notes/{notes[0]}"
+    assert (await client.patch(url, json={"status": "fixed", "fixed_in_item_id": "nope"}, headers=artist["headers"])).status_code == 400
+    r = await client.patch(url, json={"status": "fixed", "fixed_in_item_id": elsewhere["id"]}, headers=artist["headers"])
+    assert r.status_code == 400 and "this note's task" in r.json()["detail"]
+
+    # Named revision wins over "latest" (v003 exists, but the fix went out in v002).
+    r = await client.patch(url, json={"status": "fixed", "comment": "Fixed in v002", "fixed_in_item_id": v2["id"]}, headers=artist["headers"])
+    assert r.status_code == 200, r.text
+    fixed = next(n for n in r.json()["notes"] if n["id"] == notes[0])
+    assert fixed["fixed_in"] == "v002" and fixed["fixed_in_item_id"] == v2["id"]
+    # Without one it still defaults to the newest revision.
+    r = await client.patch(f"/api/v1/reviews/notes/{notes[1]}", json={"status": "fixed"}, headers=artist["headers"])
+    assert next(n for n in r.json()["notes"] if n["id"] == notes[1])["fixed_in"] == v3["label"] == "v003"
+
+
 async def test_studios_cannot_see_each_others_reviews(client, tmp_path):
     a = await signup(client, "Alpha")
     b = await signup(client, "Beta")
