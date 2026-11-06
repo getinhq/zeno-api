@@ -190,7 +190,7 @@ async def process_item(item_id: UUID) -> None:
             await media.make_video_proxy(src, proxy, fps, info.has_audio)
             frame_count = await media.count_frames(proxy)
             thumb = workdir / "thumb.jpg"
-            await media.make_thumbnail(proxy, thumb, at_seconds=(frame_count / 2) / float(fps))
+            await media.make_thumbnail(proxy, thumb, at_seconds=((frame_count - 1) // 2) / float(fps))
             strip = workdir / "filmstrip.jpg"
             tiles, step = await media.make_filmstrip(proxy, strip, frame_count)
             updates.update(
@@ -225,7 +225,7 @@ async def _save(item_id: UUID, updates: dict) -> None:
 async def _make_video_outputs(proxy: Path, workdir: Path, fps: Fraction) -> dict:
     frame_count = await media.count_frames(proxy)
     thumb = workdir / "thumb.jpg"
-    await media.make_thumbnail(proxy, thumb, at_seconds=(frame_count / 2) / float(fps))
+    await media.make_thumbnail(proxy, thumb, at_seconds=((frame_count - 1) // 2) / float(fps))
     strip = workdir / "filmstrip.jpg"
     tiles, step = await media.make_filmstrip(proxy, strip, frame_count)
     return {
